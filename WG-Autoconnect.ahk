@@ -42,14 +42,39 @@ WG_Exe := "C:\Program Files\WireGuard\wireguard.exe"
 ; END OF CONFIGURATION
 ; ==============================================================================
 
+; STARTUP CHECK: Verify Config Exists
+if !FileExist(WG_Config)
+{
+    MsgBox "ERROR: WireGuard Configuration File Not Found!`n`nPath: " WG_Config "`n`nPlease edit the script and check the 'WG_Config' path.", "WG-Autoconnect Error", 16
+    ExitApp
+}
+
 TunnelServiceName := "WireGuardTunnel$" TunnelName
+IsPaused := false
+
+; TRAY MENU SETUP
+A_TrayMenu.Delete() ; Clear default items
+A_TrayMenu.Add("Status: Active", (*) => {}) ; Read-only status
+A_TrayMenu.Disable("Status: Active")
+A_TrayMenu.Add() ; Separator
+A_TrayMenu.Add("Pause Monitoring", TogglePause)
+A_TrayMenu.Add() ; Separator
+A_TrayMenu.Add("Force Connect", ForceConnect)
+A_TrayMenu.Add("Force Disconnect", ForceDisconnect)
+A_TrayMenu.Add() ; Separator
+A_TrayMenu.Add("Edit Configuration", EditScript)
+A_TrayMenu.Add("Exit", ExitScript)
+A_IconTip := "WG-Autoconnect: Active"
 
 ; Check every 5 seconds
 SetTimer CheckAndToggleVPN, 5000
 
 CheckAndToggleVPN() {
-    global WG_Config, WG_Exe, TunnelServiceName, TargetApps, TunnelName
+    global WG_Config, WG_Exe, TunnelServiceName, TargetApps, TunnelName, IsPaused
     
+    if (IsPaused)
+        return
+
     AppsRunning := AreAnyAppsRunning(TargetApps)
     
     if (AppsRunning) {
@@ -57,7 +82,7 @@ CheckAndToggleVPN() {
         if (!IsServiceRunning(TunnelServiceName)) {
             Run '"' WG_Exe '" /installtunnelservice "' WG_Config '"', , "Hide"
             TrayTip "Activating WireGuard VPN (" TunnelName ")", "VPN Automation"
-            SetTimer () => TrayTip(), -3000 ; Hide tray tip after 3 seconds
+            SetTimer () => TrayTip(), -3000
         }
     } else {
         if (IsServiceRunning(TunnelServiceName)) {
@@ -78,12 +103,49 @@ AreAnyAppsRunning(AppList) {
 }
 
 IsServiceRunning(ServiceName) {
-    ; Check service state using sc query
-    ; RunWait returns the exit code
     try {
         ExitCode := RunWait(A_ComSpec ' /c sc query "' ServiceName '" | find "RUNNING"', , "Hide")
         return (ExitCode == 0)
     } catch {
         return false
     }
+}
+
+; TRAY MENU FUNCTIONS
+
+TogglePause(*) {
+    global IsPaused
+    IsPaused := !IsPaused
+    if (IsPaused) {
+        A_TrayMenu.Rename("Pause Monitoring", "Resume Monitoring")
+        A_TrayMenu.Rename("Status: Active", "Status: Paused")
+        A_IconTip := "WG-Autoconnect: Paused"
+        TrayTip "Monitoring Paused", "VPN Automation"
+    } else {
+        A_TrayMenu.Rename("Resume Monitoring", "Pause Monitoring")
+        A_TrayMenu.Rename("Status: Paused", "Status: Active")
+        A_IconTip := "WG-Autoconnect: Active"
+        TrayTip "Monitoring Resumed", "VPN Automation"
+        CheckAndToggleVPN() ; Run check immediately
+    }
+}
+
+ForceConnect(*) {
+    global WG_Config, WG_Exe, TunnelServiceName
+    Run '"' WG_Exe '" /installtunnelservice "' WG_Config '"', , "Hide"
+    TrayTip "Forcing Connection...", "VPN Automation"
+}
+
+ForceDisconnect(*) {
+    global WG_Exe, TunnelName
+    Run '"' WG_Exe '" /uninstalltunnelservice "' TunnelName '"', , "Hide"
+    TrayTip "Forcing Disconnection...", "VPN Automation"
+}
+
+EditScript(*) {
+    Edit
+}
+
+ExitScript(*) {
+    ExitApp
 }
