@@ -1,0 +1,11 @@
+# Ignore WireGuard config files (Contains Private Keys!)
+*.conf
+
+# Ignore compiled executables
+*.exe
+
+# Ignore VS Code settings
+.vscode/
+
+# Ignore AutoHotkey temp files
+*.ahk.bak
