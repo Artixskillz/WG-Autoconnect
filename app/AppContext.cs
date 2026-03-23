@@ -25,8 +25,10 @@ public sealed class AppContext : ApplicationContext
     // State
     private bool _isPaused;
     private bool _isTransitioning;
-    private bool _isScriptConnected;
+    private bool _isScriptConnected;   // true only when THIS app connected the VPN
+    private bool _userOverride;        // true when user manually connected/disconnected outside this app
     private bool _disconnectPending;
+    private bool _lastVpnState;
 
     // Notification cooldown
     private string _lastBalloonMessage = "";
@@ -144,6 +146,24 @@ public sealed class AppContext : ApplicationContext
             bool vpnUp       = _vpn.IsConnected();
             UpdateStatus(vpnUp, runningApps);
 
+            // Detect manual VPN changes by the user (outside this app)
+            if (!_isTransitioning && vpnUp != _lastVpnState)
+            {
+                if (vpnUp && !_isScriptConnected)
+                {
+                    // VPN came up but we didn't do it — user connected manually
+                    _userOverride = true;
+                    Logger.Info("Manual VPN connection detected — automation will not interfere.");
+                }
+                else if (!vpnUp && _lastVpnState && !_isScriptConnected)
+                {
+                    // VPN went down but we didn't do it — user disconnected manually
+                    _userOverride = true;
+                    Logger.Info("Manual VPN disconnection detected — automation will not interfere.");
+                }
+            }
+            _lastVpnState = vpnUp;
+
             if (appsRunning)
             {
                 if (_disconnectPending)
@@ -152,13 +172,15 @@ public sealed class AppContext : ApplicationContext
                     _disconnectPending = false;
                     Logger.Info("Grace-period disconnect cancelled \u2014 app came back.");
                 }
-                if (!vpnUp)
+                if (!vpnUp && !_userOverride)
                     await DoConnect();
-                else
-                    _isScriptConnected = true;
             }
             else
             {
+                // All monitored apps closed — clear the manual override so
+                // automation resumes next time an app launches
+                _userOverride = false;
+
                 if (vpnUp && !_disconnectPending && _isScriptConnected)
                 {
                     _disconnectPending   = true;
@@ -325,6 +347,7 @@ public sealed class AppContext : ApplicationContext
             if (_isTransitioning) return;
             if (_vpn.IsConnected()) { ShowBalloon("VPN is already connected."); return; }
             if (_disconnectPending) { _graceTimer.Stop(); _disconnectPending = false; }
+            _userOverride = false;
             Logger.Info("Force-connect by user.");
             await DoConnect();
         }
@@ -339,6 +362,7 @@ public sealed class AppContext : ApplicationContext
             if (!_vpn.IsConnected()) { ShowBalloon("VPN is already disconnected."); return; }
             if (_disconnectPending) { _graceTimer.Stop(); _disconnectPending = false; }
             _isScriptConnected = false;
+            _userOverride = false;
             Logger.Info("Force-disconnect by user.");
             await DoDisconnect();
         }
