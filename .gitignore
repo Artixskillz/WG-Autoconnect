@@ -1,11 +1,20 @@
-# Ignore WireGuard config files (Contains Private Keys!)
+# WireGuard config files (contain private keys!)
 *.conf
 
-# Ignore compiled executables
-*.exe
+# Build output
+app/bin/
+app/obj/
 
-# Ignore VS Code settings
+# VS Code / IDE
 .vscode/
+.vs/
+*.user
+*.suo
 
-# Ignore AutoHotkey temp files
+# AutoHotkey temp files
 *.ahk.bak
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store

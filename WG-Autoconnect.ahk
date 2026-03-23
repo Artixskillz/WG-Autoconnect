@@ -32,11 +32,12 @@ class Config
 
 class State
 {
-    static IsPaused          := false
-    static IsTransitioning   := false
-    static DisconnectPending := false
-    static ConnectRetries    := 0
-    static DisconnectRetries := 0
+    static IsPaused            := false
+    static IsTransitioning     := false
+    static DisconnectPending   := false
+    static ConnectRetries      := 0
+    static DisconnectRetries   := 0
+    static IsScriptConnected   := false  ; true only when this script owns the connection
 }
 
 Config.IniFile := A_ScriptDir "\WG-Autoconnect.ini"
@@ -154,11 +155,13 @@ CheckAndToggleVPN()
         }
         if !VpnUp
             ConnectVPN()
+        else
+            State.IsScriptConnected := true  ; Take ownership: apps need the VPN, we'll manage it
     }
     else
     {
-        ; Schedule disconnect after grace period to handle brief app restarts
-        if VpnUp && !State.DisconnectPending
+        ; Only auto-disconnect if the script connected — don't touch manually-established tunnels
+        if VpnUp && !State.DisconnectPending && State.IsScriptConnected
         {
             State.DisconnectPending := true
             SetTimer DisconnectAfterGrace, -Config.GracePeriodMs
@@ -176,7 +179,8 @@ DisconnectAfterGrace()
 
 ConnectVPN()
 {
-    State.IsTransitioning := true
+    State.IsTransitioning    := true
+    State.IsScriptConnected  := true
     try
     {
         Run '"' Config.WG_Exe '" /installtunnelservice "' Config.WG_Config '"', , "Hide"
@@ -245,8 +249,9 @@ VerifyDisconnect()
 {
     if !IsServiceRunning(Config.TunnelService)
     {
-        State.DisconnectRetries := 0
-        State.IsTransitioning   := false
+        State.DisconnectRetries  := 0
+        State.IsTransitioning    := false
+        State.IsScriptConnected  := false
         UpdateTrayStatus(false)
         LogEvent("Disconnect verified | Tunnel: " Config.TunnelName)
     }
