@@ -7,8 +7,15 @@ static class Program
     private static Mutex? _mutex;
 
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        if (args.Length > 0 && args[0].Equals("--uninstall", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplicationConfiguration.Initialize();
+            Uninstaller.Run();
+            return;
+        }
+
         _mutex = new Mutex(true, "Global\\WgAutoconnect-SingleInstance", out bool isNew);
         if (!isNew)
         {

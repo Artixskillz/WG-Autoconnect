@@ -77,6 +77,7 @@ public sealed class AppContext : ApplicationContext
         _menu.Items.Add(new ToolStripMenuItem("View Log",  null, OnViewLog));
         _menu.Items.Add(new ToolStripMenuItem("Check for Updates", null, OnCheckForUpdates));
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(new ToolStripMenuItem("Uninstall", null, OnUninstall));
         _menu.Items.Add(new ToolStripMenuItem("Exit", null, OnExit));
 
         _trayIcon = new NotifyIcon
@@ -400,6 +401,19 @@ public sealed class AppContext : ApplicationContext
             System.Diagnostics.Process.Start("notepad.exe", Logger.LogPath);
         else
             ShowBalloon("No log file yet.");
+    }
+
+    private void OnUninstall(object? sender, EventArgs e)
+    {
+        _pollTimer.Stop();
+        _graceTimer.Stop();
+
+        if (_settings.DisconnectOnExit && _isScriptConnected && _vpn.IsConnected())
+            _vpn.DisconnectSync();
+
+        _trayIcon.Visible = false;
+        Uninstaller.Run();
+        Application.Exit();
     }
 
     private void OnExit(object? sender, EventArgs e)
