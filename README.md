@@ -21,6 +21,8 @@ WG-Autoconnect is a lightweight Windows tray application that monitors your runn
 - **Startup registration** — One-click "Run at Windows Startup" via Task Scheduler (elevated, no UAC prompt on login)
 - **Config file watcher** — External changes to `settings.json` are picked up automatically
 - **Log rotation** — Timestamped log file, auto-rotates at 512 KB, viewable from the tray menu
+- **Auto-update check** — Notifies you on startup if a newer release is available (also available from tray menu)
+- **Uninstaller** — Clean removal from tray menu or `--uninstall` flag (removes startup task, settings, logs)
 - **Single-file exe** — Self-contained, no installer needed, no runtime dependencies
 
 ## Download
@@ -53,6 +55,8 @@ Grab the latest `WG-Autoconnect.exe` from the [Releases](https://github.com/Arti
 | Run at Startup | Toggle Task Scheduler registration (elevated, no UAC on login) |
 | Settings | Open the settings panel with live VPN status |
 | View Log | Open `app.log` in Notepad |
+| Check for Updates | Check GitHub for a newer release |
+| Uninstall | Remove startup task, settings, logs, and optionally the exe |
 | Exit | Exit the app (disconnects VPN if "Disconnect on exit" is enabled) |
 
 ## How It Works
@@ -82,6 +86,16 @@ Settings are stored in `%AppData%\WG-Autoconnect\settings.json`:
 ```
 
 You can edit this file directly — changes are picked up automatically via a file watcher.
+
+## Uninstalling
+
+From the tray menu, click **Uninstall**, or run from a terminal:
+
+```bash
+WG-Autoconnect.exe --uninstall
+```
+
+This removes the Task Scheduler startup entry and deletes settings/logs from `%AppData%\WG-Autoconnect`. You'll be asked if you also want to delete the exe. Your WireGuard installation and `.conf` files are never touched.
 
 ## Building from Source
 
