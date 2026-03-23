@@ -396,14 +396,26 @@ public sealed class AppContext : ApplicationContext
 
     private void OpenSettings()
     {
-        using var form = new SetupForm(_settings, _vpn);
-        if (form.ShowDialog() != DialogResult.OK) return;
+        // Suppress file watcher while the form is open to avoid
+        // double-reload / disposal conflicts when Save writes settings.json
+        if (_fileWatcher != null) _fileWatcher.EnableRaisingEvents = false;
+        _reloadDebounce.Stop();
 
-        _settings = SettingsService.Load();
-        _vpn.UpdateSettings(_settings);
-        _pollTimer.Interval  = _settings.PollIntervalMs;
-        _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
-        Logger.Info("Settings updated by user.");
+        try
+        {
+            using var form = new SetupForm(_settings, _vpn);
+            if (form.ShowDialog() != DialogResult.OK) return;
+
+            _settings = SettingsService.Load();
+            _vpn.UpdateSettings(_settings);
+            _pollTimer.Interval  = _settings.PollIntervalMs;
+            _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
+            Logger.Info("Settings updated by user.");
+        }
+        finally
+        {
+            if (_fileWatcher != null) _fileWatcher.EnableRaisingEvents = true;
+        }
     }
 
     private async void OnCheckForUpdates(object? sender, EventArgs e)

@@ -17,8 +17,10 @@ WG-Autoconnect is a lightweight Windows tray application that monitors your runn
 - **Process picker** — Browse and select from currently running processes instead of typing names manually
 - **Auto-detection** — Automatically finds your WireGuard installation and `.conf` files
 - **System tray icon** — Color-coded icon shows VPN state at a glance (red = connected, gray = disconnected, orange = transitioning, yellow = paused)
-- **Manual override** — Force Connect / Force Disconnect from the tray menu without interfering with automation
+- **Hands-off manual override** — if you manually connect or disconnect WireGuard yourself, the app backs off and won't interfere until apps next trigger automation
+- **Force Connect / Disconnect** — tray menu shortcuts for immediate VPN control
 - **Startup registration** — One-click "Run at Windows Startup" via Task Scheduler (elevated, no UAC prompt on login)
+- **Professional installer** — Inno Setup installer with EULA, desktop shortcut option, and auto-start registration (or use the portable single-file exe)
 - **Config file watcher** — External changes to `settings.json` are picked up automatically
 - **Log rotation** — Timestamped log file, auto-rotates at 512 KB, viewable from the tray menu
 - **Auto-update check** — Notifies you on startup if a newer release is available (also available from tray menu)
@@ -27,13 +29,22 @@ WG-Autoconnect is a lightweight Windows tray application that monitors your runn
 
 ## Download
 
-Grab the latest `WG-Autoconnect.exe` from the [Releases](https://github.com/Artixskillz/WG-Autoconnect/releases) page.
+Grab the latest release from the [Releases](https://github.com/Artixskillz/WG-Autoconnect/releases) page:
+
+- **`WG-Autoconnect-Setup.exe`** — Installer with EULA, desktop shortcut option, and startup registration
+- **`WG-Autoconnect.exe`** — Portable single-file exe (no installer needed)
 
 > **Requirements:** Windows 10/11 (x64) and [WireGuard for Windows](https://www.wireguard.com/install/).
-> No .NET runtime install needed — everything is bundled in the exe.
+> No .NET runtime install needed — everything is bundled.
 
 ## Quick Start
 
+### Option A: Installer
+1. **Download** `WG-Autoconnect-Setup.exe` from [Releases](https://github.com/Artixskillz/WG-Autoconnect/releases)
+2. **Run the installer** — accept the license, choose desktop shortcut and auto-start options
+3. The app launches after installation — continue to step 3 below
+
+### Option B: Portable
 1. **Download** `WG-Autoconnect.exe` from [Releases](https://github.com/Artixskillz/WG-Autoconnect/releases)
 2. **Run it** — accept the UAC prompt (admin is required to control WireGuard tunnel services)
 3. **Configure** — the setup form opens on first run:
@@ -65,8 +76,8 @@ Every few seconds (configurable), WG-Autoconnect checks if any of your monitored
 
 - **App detected + VPN down** → connects the tunnel via `wireguard.exe /installtunnelservice`
 - **No apps + VPN up** → starts the grace period, then disconnects via `/uninstalltunnelservice`
-- **Manual VPN connection** → if you connect WireGuard yourself (outside this app), it won't interfere — it only auto-disconnects tunnels it connected
-- **Force Disconnect** → clears the "owned by this app" flag so it won't immediately reconnect
+- **Manual VPN connection** → if you connect or disconnect WireGuard yourself (outside this app), automation pauses until all monitored apps close and reopen
+- **Force Disconnect** → clears the automation flags so it won't immediately reconnect
 
 Connection status is verified by checking the `WireGuardTunnel$<name>` Windows service state directly (no shell commands spawned).
 
@@ -89,13 +100,15 @@ You can edit this file directly — changes are picked up automatically via a fi
 
 ## Uninstalling
 
-From the tray menu, click **Uninstall**, or run from a terminal:
+**If you used the installer:** Use "Add or Remove Programs" in Windows Settings, or run the uninstaller from the Start Menu.
+
+**If you used the portable exe:** From the tray menu, click **Uninstall**, or run from a terminal:
 
 ```bash
 WG-Autoconnect.exe --uninstall
 ```
 
-This removes the Task Scheduler startup entry and deletes settings/logs from `%AppData%\WG-Autoconnect`. You'll be asked if you also want to delete the exe. Your WireGuard installation and `.conf` files are never touched.
+Both methods remove the Task Scheduler startup entry and delete settings/logs from `%AppData%\WG-Autoconnect`. Your WireGuard installation and `.conf` files are never touched.
 
 ## Building from Source
 
@@ -109,8 +122,14 @@ dotnet build
 
 # Publish single-file exe
 dotnet publish -c Release
-
 # Output: app/bin/Release/net8.0-windows/win-x64/publish/WG-Autoconnect.exe
+```
+
+**Build the installer** (requires [Inno Setup 6](https://jrsoftware.org/isdl.php)):
+
+```bash
+iscc installer/setup.iss
+# Output: installer/output/WG-Autoconnect-Setup.exe
 ```
 
 **Requirements:** [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)

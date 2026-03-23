@@ -53,4 +53,23 @@ public static class Uninstaller
             "Uninstall WG-Autoconnect",
             MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
+
+    /// <summary>
+    /// Silent uninstall — removes startup task and app data without any prompts.
+    /// Called by the Inno Setup uninstaller via --uninstall-silent flag.
+    /// </summary>
+    public static void RunSilent()
+    {
+        // Remove startup task
+        if (StartupService.IsRegistered())
+            StartupService.Unregister();
+
+        // Delete app data (settings + logs)
+        try
+        {
+            if (Directory.Exists(SettingsService.DataDir))
+                Directory.Delete(SettingsService.DataDir, recursive: true);
+        }
+        catch { }
+    }
 }

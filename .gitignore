@@ -11,6 +11,9 @@ app/obj/
 *.user
 *.suo
 
+# Installer output
+installer/output/
+
 # OS files
 Thumbs.db
 Desktop.ini

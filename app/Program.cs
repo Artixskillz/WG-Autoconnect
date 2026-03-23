@@ -16,6 +16,13 @@ static class Program
             return;
         }
 
+        // Silent uninstall (used by Inno Setup uninstaller — no prompts)
+        if (args.Length > 0 && args[0].Equals("--uninstall-silent", StringComparison.OrdinalIgnoreCase))
+        {
+            Uninstaller.RunSilent();
+            return;
+        }
+
         _mutex = new Mutex(true, "Global\\WgAutoconnect-SingleInstance", out bool isNew);
         if (!isNew)
         {
