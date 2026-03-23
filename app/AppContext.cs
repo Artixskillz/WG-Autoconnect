@@ -75,6 +75,7 @@ public sealed class AppContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Settings", null, (_, _) => OpenSettings()));
         _menu.Items.Add(new ToolStripMenuItem("View Log",  null, OnViewLog));
+        _menu.Items.Add(new ToolStripMenuItem("Check for Updates", null, OnCheckForUpdates));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Exit", null, OnExit));
 
@@ -378,6 +379,19 @@ public sealed class AppContext : ApplicationContext
         _pollTimer.Interval  = _settings.PollIntervalMs;
         _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
         Logger.Info("Settings updated by user.");
+    }
+
+    private async void OnCheckForUpdates(object? sender, EventArgs e)
+    {
+        ShowBalloon("Checking for updates...");
+        await UpdateChecker.CheckForUpdateAsync((tag, url) =>
+            _syncContext.Post(_ =>
+            {
+                Logger.Info($"Update available: {tag}");
+                ShowBalloon($"Update {tag} available! Visit the releases page to download.", ToolTipIcon.Info);
+            }, null),
+            () => _syncContext.Post(_ =>
+                ShowBalloon("You're running the latest version."), null));
     }
 
     private void OnViewLog(object? sender, EventArgs e)

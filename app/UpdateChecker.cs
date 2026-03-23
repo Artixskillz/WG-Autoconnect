@@ -9,7 +9,7 @@ public static class UpdateChecker
 {
     private const string ReleasesUrl = "https://api.github.com/repos/Artixskillz/WG-Autoconnect/releases/latest";
 
-    public static async Task CheckForUpdateAsync(Action<string, string> onUpdateAvailable)
+    public static async Task CheckForUpdateAsync(Action<string, string> onUpdateAvailable, Action? onUpToDate = null)
     {
         try
         {
@@ -29,6 +29,8 @@ public static class UpdateChecker
 
             if (latest > current)
                 onUpdateAvailable(release.TagName, release.HtmlUrl ?? "");
+            else
+                onUpToDate?.Invoke();
         }
         catch
         {
