@@ -101,10 +101,6 @@ dotnet publish -c Release
 
 **Requirements:** [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-## Legacy (AutoHotkey)
-
-The original AutoHotkey v2 script (`WG-Autoconnect.ahk`) is still included in the repo for reference. The C# app is the actively maintained version.
-
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.

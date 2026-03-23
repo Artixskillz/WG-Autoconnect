@@ -28,6 +28,11 @@ public sealed class AppContext : ApplicationContext
     private bool _isScriptConnected;
     private bool _disconnectPending;
 
+    // Notification cooldown
+    private string _lastBalloonMessage = "";
+    private DateTime _lastBalloonTime = DateTime.MinValue;
+    private static readonly TimeSpan BalloonCooldown = TimeSpan.FromSeconds(30);
+
     public AppContext()
     {
         _syncContext = SynchronizationContext.Current!;
@@ -112,6 +117,14 @@ public sealed class AppContext : ApplicationContext
                 Logger.Info("Added to Windows startup (first-run prompt).");
             }
         }
+
+        // Check for updates (non-blocking)
+        _ = UpdateChecker.CheckForUpdateAsync((tag, url) =>
+            _syncContext.Post(_ =>
+            {
+                Logger.Info($"Update available: {tag}");
+                ShowBalloon($"Update {tag} available! Right-click tray → check releases.", ToolTipIcon.Info);
+            }, null));
     }
 
     // -------------------------------------------------------------------------
@@ -426,6 +439,13 @@ public sealed class AppContext : ApplicationContext
 
     private void ShowBalloon(string message, ToolTipIcon icon = ToolTipIcon.Info)
     {
+        // Suppress duplicate notifications within cooldown window
+        if (message == _lastBalloonMessage && DateTime.UtcNow - _lastBalloonTime < BalloonCooldown)
+            return;
+
+        _lastBalloonMessage = message;
+        _lastBalloonTime    = DateTime.UtcNow;
+
         _trayIcon.BalloonTipTitle = "WG-Autoconnect";
         _trayIcon.BalloonTipText  = message;
         _trayIcon.BalloonTipIcon  = icon;
