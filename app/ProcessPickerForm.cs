@@ -48,6 +48,9 @@ public class ProcessPickerForm : Form
         ClientSize      = new Size(400, 530);
         BackColor       = Theme.Background;
         Font            = Theme.Base;
+        AutoScaleMode   = AutoScaleMode.Dpi;
+        DoubleBuffered  = true;
+        Icon            = IconRenderer.CreateFormIcon();
 
         Controls.Add(Theme.CreateHeader("Select Applications", "Choose running processes to monitor"));
 

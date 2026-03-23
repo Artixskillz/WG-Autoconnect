@@ -50,6 +50,35 @@ public static class IconRenderer
         return owned;  // caller must Dispose() this
     }
 
+    /// <summary>Creates a 32x32 icon for use as a Form window icon.</summary>
+    public static Icon CreateFormIcon()
+    {
+        using var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.Clear(Color.Transparent);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+            using var brush = new SolidBrush(ColorConnected);
+            g.FillEllipse(brush, 2, 2, 28, 28);
+
+            using var font = new Font("Segoe UI", 13f, FontStyle.Bold, GraphicsUnit.Pixel);
+            var sf = new StringFormat
+            {
+                Alignment     = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+            };
+            g.DrawString("W", font, Brushes.White, new RectangleF(0, 1, 32, 31), sf);
+        }
+
+        IntPtr hicon   = bmp.GetHicon();
+        using var wrap = Icon.FromHandle(hicon);
+        Icon owned     = (Icon)wrap.Clone();
+        DestroyIcon(hicon);
+        return owned;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 }

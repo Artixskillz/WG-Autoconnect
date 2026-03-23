@@ -54,9 +54,14 @@ public class SetupForm : Form
         StartPosition   = FormStartPosition.CenterScreen;
         BackColor       = Theme.Background;
         Font            = Theme.Base;
+        AutoScaleMode   = AutoScaleMode.Dpi;
+        DoubleBuffered  = true;
+        Icon            = IconRenderer.CreateFormIcon();
 
         // ── Header ───────────────────────────────────────────────
-        Controls.Add(Theme.CreateHeader("WG-Autoconnect", "Configure your WireGuard VPN automation"));
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        var verText = version != null ? $"v{version.Major}.{version.Minor}.{version.Build}" : "";
+        Controls.Add(Theme.CreateHeader("WG-Autoconnect", $"Configure your WireGuard VPN automation  {verText}"));
 
         const int cx  = 16;
         const int cw  = 498;
@@ -68,7 +73,7 @@ public class SetupForm : Form
         // ── Live status bar (only when editing, not first run) ───
         if (_vpn != null)
         {
-            _statusBar = new Panel
+            _statusBar = new DoubleBufferedPanel
             {
                 Left = cx, Top = 82, Width = cw, Height = 52,
             };
@@ -400,4 +405,10 @@ public class SetupForm : Form
         if (target is ComboBox c) c.Text = dlg.FileName;
         else ((TextBox)target).Text = dlg.FileName;
     }
+}
+
+/// <summary>Panel with double buffering enabled to prevent flicker during custom painting.</summary>
+internal sealed class DoubleBufferedPanel : Panel
+{
+    public DoubleBufferedPanel() => DoubleBuffered = true;
 }

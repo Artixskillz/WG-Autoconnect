@@ -87,14 +87,25 @@ public static class Theme
         };
         card.Paint += (_, e) =>
         {
-            // Left accent stripe
-            using (var brush = new SolidBrush(Primary))
-                e.Graphics.FillRectangle(brush, 0, 0, 4, card.Height);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            // Subtle right + bottom edge for depth
-            using var pen = new Pen(Color.FromArgb(25, 0, 0, 0));
-            e.Graphics.DrawLine(pen, card.Width - 1, 0, card.Width - 1, card.Height - 1);
-            e.Graphics.DrawLine(pen, 4, card.Height - 1, card.Width - 1, card.Height - 1);
+            // Rounded clip region
+            const int r = 6;
+            using var path = new GraphicsPath();
+            path.AddArc(0, 0, r, r, 180, 90);
+            path.AddArc(width - r - 1, 0, r, r, 270, 90);
+            path.AddArc(width - r - 1, height - r - 1, r, r, 0, 90);
+            path.AddArc(0, height - r - 1, r, r, 90, 90);
+            path.CloseFigure();
+
+            // Subtle shadow/border
+            using (var borderPen = new Pen(Color.FromArgb(30, 0, 0, 0)))
+                g.DrawPath(borderPen, path);
+
+            // Left accent stripe (clipped to rounded corner)
+            using (var brush = new SolidBrush(Primary))
+                g.FillRectangle(brush, 0, r / 2, 4, card.Height - r);
         };
 
         // Section title
