@@ -7,29 +7,74 @@ public static class StartupService
     private const string TaskName = "WG-Autoconnect";
 
     public static bool IsRegistered()
-        => RunSchtasks($"/query /tn \"{TaskName}\"", out _) == 0;
+        => RunSchtasks("/query /tn \"WG-Autoconnect\"", out _) == 0;
 
     public static bool Register()
     {
         var exe = Environment.ProcessPath ?? Application.ExecutablePath;
         Logger.Info($"Registering startup task for: {exe}");
 
-        // schtasks wants the /tr value as a single quoted path
-        int code = RunSchtasks(
-            $"/create /tn \"{TaskName}\" /tr \"'{exe}'\" /sc ONLOGON /rl HIGHEST /f",
-            out string output);
+        // Use XML import — schtasks /create /tr can't handle paths with spaces reliably
+        var xml = $@"<?xml version=""1.0"" encoding=""UTF-16""?>
+<Task version=""1.2"" xmlns=""http://schemas.microsoft.com/windows/2004/02/mit/task"">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id=""Author"">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{SecurityElement(exe)}</Command>
+    </Exec>
+  </Actions>
+</Task>";
 
-        if (code != 0)
-            Logger.Error($"schtasks /create failed (exit {code}): {output}");
-        else
-            Logger.Info("Startup task registered successfully.");
+        // Write XML to a temp file, import it, then delete
+        var xmlPath = Path.Combine(Path.GetTempPath(), "wg-autoconnect-task.xml");
+        try
+        {
+            File.WriteAllText(xmlPath, xml, System.Text.Encoding.Unicode);
 
-        return code == 0;
+            int code = RunSchtasks($"/create /tn \"WG-Autoconnect\" /xml \"{xmlPath}\" /f", out string output);
+
+            if (code != 0)
+                Logger.Error($"schtasks /create failed (exit {code}): {output}");
+            else
+                Logger.Info("Startup task registered successfully.");
+
+            return code == 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Register failed: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            try { File.Delete(xmlPath); } catch { }
+        }
     }
+
+    /// <summary>Escape XML special characters in the exe path.</summary>
+    private static string SecurityElement(string value)
+        => System.Security.SecurityElement.Escape(value) ?? value;
 
     public static bool Unregister()
     {
-        int code = RunSchtasks($"/delete /tn \"{TaskName}\" /f", out string output);
+        int code = RunSchtasks("/delete /tn \"WG-Autoconnect\" /f", out string output);
         if (code != 0)
             Logger.Error($"schtasks /delete failed (exit {code}): {output}");
         else
