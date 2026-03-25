@@ -22,6 +22,9 @@ public class SetupForm : Form
     private string _liveStatusText = "";
     private string _liveDetailText = "";
 
+    // Layout panels for resize support
+    private Panel _contentPanel = null!;
+
     public SetupForm(AppSettings settings, VpnService? vpn = null)
     {
         _original = settings;
@@ -48,66 +51,82 @@ public class SetupForm : Form
     private void BuildUI()
     {
         Text            = "WG-Autoconnect";
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox     = false;
-        MinimizeBox     = false;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox     = true;
+        MinimizeBox     = true;
         StartPosition   = FormStartPosition.CenterScreen;
         BackColor       = Theme.Background;
         Font            = Theme.Base;
         AutoScaleMode   = AutoScaleMode.Dpi;
         DoubleBuffered  = true;
         Icon            = IconRenderer.CreateFormIcon();
+        MinimumSize     = new Size(480, 560);
+        ClientSize      = new Size(530, _vpn != null ? 680 : 630);
 
-        // ── Header ───────────────────────────────────────────────
+        // ── Header (fixed at top) ──────────────────────────────────
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
         var verText = version != null ? $"v{version.Major}.{version.Minor}.{version.Build}" : "";
-        Controls.Add(Theme.CreateHeader("WG-Autoconnect", $"Configure your WireGuard VPN automation  {verText}"));
+        var header  = Theme.CreateHeader("WG-Autoconnect", $"Configure your WireGuard VPN automation  {verText}");
+        header.Dock = DockStyle.Top;
+        Controls.Add(header);
 
-        const int cx  = 16;
-        const int cw  = 498;
-        const int ix  = 20;
-        const int iw  = 462;
-        const int ibw = 412;
-        int y = 90;
+        // ── Scrollable content area ────────────────────────────────
+        _contentPanel = new Panel
+        {
+            Dock       = DockStyle.Fill,
+            AutoScroll = true,
+            Padding    = new Padding(16, 8, 16, 8),
+        };
+        Controls.Add(_contentPanel);
 
-        // ── Live status bar (only when editing, not first run) ───
+        // Must add content AFTER header so Fill docks correctly
+        _contentPanel.BringToFront();
+
+        int cx = 0;  // relative to content panel (padding handles margins)
+        int cw = _contentPanel.ClientSize.Width - 32;
+        int y  = 0;
+
+        // ── Live status bar (only when editing, not first run) ─────
         if (_vpn != null)
         {
             _statusBar = new DoubleBufferedPanel
             {
-                Left = cx, Top = 82, Width = cw, Height = 52,
+                Left = cx, Top = y, Height = 52,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             };
+            _statusBar.Width = cw;
             _statusBar.Paint += PaintStatusBar;
-            Controls.Add(_statusBar);
-            y = 144;
-            ClientSize = new Size(530, 680);
-        }
-        else
-        {
-            ClientSize = new Size(530, 630);
+            _contentPanel.Controls.Add(_statusBar);
+            y += 60;
         }
 
         // ══════════════════════════════════════════════════════════
         // Card 1 — WireGuard Configuration
         // ══════════════════════════════════════════════════════════
         var card1 = Theme.CreateCard(cx, y, cw, 136, "WireGuard Configuration");
+        card1.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         {
-            int iy = 44;
+            int ix  = 20;
+            int iy  = 44;
 
             card1.Controls.Add(SmallLabel("Config file (.conf)", ix, iy));
             iy += 19;
 
             _configCombo = new ComboBox
             {
-                Left = ix, Top = iy, Width = ibw,
+                Left = ix, Top = iy,
                 DropDownStyle = ComboBoxStyle.DropDown,
                 FlatStyle     = FlatStyle.Flat,
                 BackColor     = Color.White,
+                Anchor        = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             };
+            _configCombo.Width = card1.Width - ix - 64;
             foreach (var f in SettingsService.FindConfFiles()) _configCombo.Items.Add(f);
             card1.Controls.Add(_configCombo);
 
-            var btnConf = Theme.SecondaryBtn("\u2026", ix + ibw + 6, iy, 36, 24);
+            var btnConf = Theme.SecondaryBtn("\u2026", 0, iy, 36, 24);
+            btnConf.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnConf.Left   = card1.Width - 56;
             btnConf.Click += (_, _) => BrowseFor(_configCombo, "WireGuard Config|*.conf|All Files|*.*");
             card1.Controls.Add(btnConf);
             iy += 30;
@@ -117,30 +136,38 @@ public class SetupForm : Form
 
             _exePath = new TextBox
             {
-                Left = ix, Top = iy, Width = ibw,
+                Left = ix, Top = iy,
                 BorderStyle = BorderStyle.FixedSingle,
+                Anchor      = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             };
+            _exePath.Width = card1.Width - ix - 64;
             card1.Controls.Add(_exePath);
 
-            var btnExe = Theme.SecondaryBtn("\u2026", ix + ibw + 6, iy, 36, 24);
+            var btnExe = Theme.SecondaryBtn("\u2026", 0, iy, 36, 24);
+            btnExe.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnExe.Left   = card1.Width - 56;
             btnExe.Click += (_, _) => BrowseFor(_exePath, "Executables|wireguard.exe;*.exe|All Files|*.*");
             card1.Controls.Add(btnExe);
         }
-        Controls.Add(card1);
+        _contentPanel.Controls.Add(card1);
         y += card1.Height + 10;
 
         // ══════════════════════════════════════════════════════════
         // Card 2 — Monitored Applications
         // ══════════════════════════════════════════════════════════
         var card2 = Theme.CreateCard(cx, y, cw, 194, "Monitored Applications");
+        card2.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         {
+            int ix = 20;
             int iy = 42;
 
             card2.Controls.Add(new Label
             {
                 Text = "VPN connects when any of these processes are running:",
-                Left = ix, Top = iy, Width = iw, Height = 18,
+                Left = ix, Top = iy, Height = 18, AutoSize = false,
                 ForeColor = Theme.TextSecondary,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                Width  = card2.Width - ix * 2,
             });
             iy += 22;
 
@@ -148,12 +175,13 @@ public class SetupForm : Form
             {
                 Left         = ix,
                 Top          = iy,
-                Width        = iw,
                 Height       = 90,
                 BorderStyle  = BorderStyle.FixedSingle,
                 DrawMode     = DrawMode.OwnerDrawFixed,
                 ItemHeight   = 24,
+                Anchor       = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             };
+            _appsList.Width = card2.Width - ix * 2;
             _appsList.DrawItem += DrawAppItem;
             card2.Controls.Add(_appsList);
             iy += 96;
@@ -188,14 +216,16 @@ public class SetupForm : Form
             card2.Controls.Add(btnPick);
             card2.Controls.Add(btnRemove);
         }
-        Controls.Add(card2);
+        _contentPanel.Controls.Add(card2);
         y += card2.Height + 10;
 
         // ══════════════════════════════════════════════════════════
         // Card 3 — Options
         // ══════════════════════════════════════════════════════════
         var card3 = Theme.CreateCard(cx, y, cw, 130, "Options");
+        card3.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         {
+            int ix = 20;
             int iy = 46;
 
             card3.Controls.Add(new Label { Text = "Poll interval", Left = ix, Top = iy + 3, Width = 100, Height = 20, ForeColor = Theme.TextPrimary });
@@ -223,23 +253,40 @@ public class SetupForm : Form
             _disconnectOnExit = new CheckBox
             {
                 Text = "Disconnect VPN when this app exits",
-                Left = ix, Top = iy, Width = iw, Height = 22,
+                Left = ix, Top = iy, Width = 300, Height = 22,
                 ForeColor = Theme.TextPrimary,
                 FlatStyle = FlatStyle.Flat,
             };
             card3.Controls.Add(_disconnectOnExit);
         }
-        Controls.Add(card3);
+        _contentPanel.Controls.Add(card3);
         y += card3.Height + 16;
 
-        // ── Bottom buttons ───────────────────────────────────────
-        var btnCancel = Theme.SecondaryBtn("Cancel", cx + cw - 184, y, 86, 36);
-        var btnSave   = Theme.PrimaryBtn("Save",     cx + cw - 92,  y, 92, 36);
+        // ── Bottom buttons ─────────────────────────────────────────
+        var btnPanel = new Panel
+        {
+            Left   = cx,
+            Top    = y,
+            Height = 40,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+        };
+        btnPanel.Width = cw;
+
+        var btnCancel = Theme.SecondaryBtn("Cancel", 0, 0, 86, 36);
+        btnCancel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        btnCancel.Left   = btnPanel.Width - 184;
+
+        var btnSave = Theme.PrimaryBtn("Save", 0, 0, 92, 36);
+        btnSave.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        btnSave.Left   = btnPanel.Width - 92;
 
         btnSave.Click   += OnSave;
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
-        Controls.Add(btnSave);
-        Controls.Add(btnCancel);
+
+        btnPanel.Controls.Add(btnSave);
+        btnPanel.Controls.Add(btnCancel);
+        _contentPanel.Controls.Add(btnPanel);
+
         AcceptButton = btnSave;
         CancelButton = btnCancel;
     }
