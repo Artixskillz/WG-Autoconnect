@@ -410,7 +410,12 @@ public sealed class AppContext : ApplicationContext
             _vpn.UpdateSettings(_settings);
             _pollTimer.Interval  = _settings.PollIntervalMs;
             _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
-            Logger.Info("Settings updated by user.");
+            UpdateStatus(_vpn.IsConnected());
+            Logger.Info($"Settings updated by user | Tunnel: {_settings.TunnelName} | Watching: {string.Join(", ", _settings.MonitoredApps)}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"OpenSettings error: {ex}");
         }
         finally
         {

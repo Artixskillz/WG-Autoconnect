@@ -32,6 +32,18 @@ static class Program
             return;
         }
 
+        // Catch unhandled exceptions so the app doesn't silently die
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) =>
+        {
+            Logger.Error($"Unhandled UI exception: {e.Exception}");
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+                Logger.Error($"Unhandled exception: {ex}");
+        };
+
         ApplicationConfiguration.Initialize();
         Application.Run(new AppContext());
 
