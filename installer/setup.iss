@@ -49,9 +49,7 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Register startup task if the user selected that option
-Filename: "schtasks"; Parameters: "/create /tn ""WG-Autoconnect"" /tr ""{app}\{#MyAppExeName}"" /sc ONLOGON /rl HIGHEST /f"; Flags: runhidden; Tasks: startup
-; Launch after install
+; Launch after install — the app's own "Run at Startup" handles Task Scheduler registration
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
@@ -70,5 +68,15 @@ begin
   if CurStep = ssInstall then
   begin
     Exec('taskkill', '/F /IM WG-Autoconnect.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+
+  // After install: register startup via the app's own XML-based task registration
+  // (handles paths with spaces, scoped to current user, includes logon delay)
+  if CurStep = ssPostInstall then
+  begin
+    if WizardIsTaskSelected('startup') then
+    begin
+      Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--register-startup', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
   end;
 end;

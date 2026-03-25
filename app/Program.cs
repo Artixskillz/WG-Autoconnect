@@ -23,6 +23,13 @@ static class Program
             return;
         }
 
+        // Register startup task and exit (used by Inno Setup installer)
+        if (args.Length > 0 && args[0].Equals("--register-startup", StringComparison.OrdinalIgnoreCase))
+        {
+            StartupService.Register();
+            return;
+        }
+
         _mutex = new Mutex(true, "Global\\WgAutoconnect-SingleInstance", out bool isNew);
         if (!isNew)
         {

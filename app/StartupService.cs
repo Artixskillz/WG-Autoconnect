@@ -14,16 +14,23 @@ public static class StartupService
         var exe = Environment.ProcessPath ?? Application.ExecutablePath;
         Logger.Info($"Registering startup task for: {exe}");
 
-        // Use XML import — schtasks /create /tr can't handle paths with spaces reliably
+        // Get current user so the task only triggers for them (not all users on multi-user PCs)
+        var userId = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
+
+        // Use XML import — schtasks /create /tr can't handle paths with spaces reliably.
+        // Includes a 10-second logon delay so network and WireGuard service are ready.
         var xml = $@"<?xml version=""1.0"" encoding=""UTF-16""?>
 <Task version=""1.2"" xmlns=""http://schemas.microsoft.com/windows/2004/02/mit/task"">
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
+      <UserId>{SecurityElement(userId)}</UserId>
+      <Delay>PT10S</Delay>
     </LogonTrigger>
   </Triggers>
   <Principals>
     <Principal id=""Author"">
+      <UserId>{SecurityElement(userId)}</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
@@ -68,7 +75,7 @@ public static class StartupService
         }
     }
 
-    /// <summary>Escape XML special characters in the exe path.</summary>
+    /// <summary>Escape XML special characters.</summary>
     private static string SecurityElement(string value)
         => System.Security.SecurityElement.Escape(value) ?? value;
 
