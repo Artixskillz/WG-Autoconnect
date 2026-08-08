@@ -114,7 +114,9 @@ You can edit this file directly — changes are picked up automatically via a fi
 WG-Autoconnect.exe --uninstall
 ```
 
-Both methods disconnect the tunnel if this app connected it, remove the Task Scheduler startup entry, and delete settings/logs from `%AppData%\WG-Autoconnect`. Your WireGuard installation and `.conf` files are never touched — and a tunnel you connected yourself via the WireGuard app is left running.
+Both methods disconnect the tunnel if this app connected it and remove the Task Scheduler startup entry. You'll be asked whether to also delete your settings and logs from `%AppData%\WG-Autoconnect` — **keep them (the default) and a future reinstall picks up your configuration automatically**. Your WireGuard installation and `.conf` files are never touched — and a tunnel you connected yourself via the WireGuard app is left running.
+
+> **Upgrading?** Don't uninstall first — just run the new installer (or replace the portable exe). Settings, logs, and the active VPN connection all carry over.
 
 ## Building from Source
 

@@ -52,19 +52,40 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ; Launch after install — the app's own "Run at Startup" handles Task Scheduler registration
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
-[UninstallRun]
-; Stop the running app first — otherwise it keeps automating (and could
-; reconnect the tunnel) while we're uninstalling underneath it
-Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillApp"
-; Run the app's own silent uninstaller: tears down the tunnel if this app
-; connected it (ownership marker), removes the startup task, deletes %AppData%
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-silent"; Flags: runhidden; RunOnceId: "CleanAppData"
-; Belt-and-braces: ensure the startup task is gone even if the step above failed
-Filename: "schtasks"; Parameters: "/delete /tn ""WG-Autoconnect"" /f"; Flags: runhidden; RunOnceId: "RemoveStartupTask"
-
 [Code]
 var
   ResultCode: Integer;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Params: String;
+begin
+  // Runs before files are removed, so {app}\exe is still available.
+  if CurUninstallStep = usUninstall then
+  begin
+    // Stop the running app first — otherwise it keeps automating (and could
+    // reconnect the tunnel) while we're uninstalling underneath it
+    Exec('taskkill', '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    // The app's own silent uninstaller tears down the tunnel if this app
+    // connected it (ownership marker) and removes the startup task.
+    // Ask whether to also delete settings/logs — keeping them means a future
+    // reinstall resumes the user's configuration. Silent uninstalls keep the
+    // historical full-cleanup behavior.
+    Params := '--uninstall-silent';
+    if not UninstallSilent then
+    begin
+      if MsgBox('Also delete your WG-Autoconnect settings and logs?' #13#10 #13#10
+                'Choose No to keep them — if you reinstall later, your configuration will be picked up automatically.',
+                mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDNO then
+        Params := '--uninstall-silent --keep-settings';
+    end;
+    Exec(ExpandConstant('{app}\{#MyAppExeName}'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    // Belt-and-braces: ensure the startup task is gone even if the step above failed
+    Exec('schtasks', '/delete /tn "WG-Autoconnect" /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin

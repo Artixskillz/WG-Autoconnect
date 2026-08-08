@@ -18,10 +18,12 @@ static class Program
             return;
         }
 
-        // Silent uninstall (used by Inno Setup uninstaller — no prompts)
+        // Silent uninstall (used by Inno Setup uninstaller — no prompts).
+        // --keep-settings preserves %AppData% so a reinstall resumes the config.
         if (args.Length > 0 && args[0].Equals("--uninstall-silent", StringComparison.OrdinalIgnoreCase))
         {
-            Uninstaller.RunSilent();
+            bool keepSettings = args.Any(a => a.Equals("--keep-settings", StringComparison.OrdinalIgnoreCase));
+            Uninstaller.RunSilent(keepSettings);
             return;
         }
 

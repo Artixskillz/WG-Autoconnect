@@ -9,7 +9,7 @@ public static class Uninstaller
             "This will uninstall WG-Autoconnect:\n\n" +
             "  • Disconnect the VPN tunnel if this app connected it\n" +
             "  • Remove startup task from Task Scheduler\n" +
-            "  • Delete settings and log files\n\n" +
+            "  • Optionally delete settings and logs (you'll be asked)\n\n" +
             "Your WireGuard installation and config files will NOT be affected.\n\n" +
             "Continue?",
             "Uninstall WG-Autoconnect",
@@ -25,9 +25,10 @@ public static class Uninstaller
 
     /// <summary>
     /// Silent uninstall — no prompts. Called by the Inno Setup uninstaller
-    /// via the --uninstall-silent flag.
+    /// via the --uninstall-silent flag (--keep-settings preserves app data).
     /// </summary>
-    public static void RunSilent() => Execute(interactive: false);
+    public static void RunSilent(bool keepSettings = false)
+        => Execute(interactive: false, liveSettings: null, keepSettings);
 
     /// <summary>
     /// Performs the actual removal steps. Call Confirm() first for interactive
@@ -35,7 +36,7 @@ public static class Uninstaller
     /// available — the on-disk settings can diverge from what this session
     /// actually manages (rejected hand-edit, rename deferred at shutdown).
     /// </summary>
-    public static void Execute(bool interactive, AppSettings? liveSettings = null)
+    public static void Execute(bool interactive, AppSettings? liveSettings = null, bool keepSettings = false)
     {
         // 1. Tear down the tunnel if THIS app connected it (marker file).
         //    Must happen before the data dir (marker + settings) is deleted.
@@ -46,13 +47,29 @@ public static class Uninstaller
         if (StartupService.IsRegistered())
             StartupService.Unregister();
 
-        // 3. Delete app data (settings + logs + marker)
-        try
+        // 3. Delete app data (settings + logs + marker) — unless the user
+        //    keeps it, in which case a future reinstall picks the
+        //    configuration up exactly where they left off.
+        bool deleteData = !keepSettings;
+        if (interactive)
         {
-            if (Directory.Exists(SettingsService.DataDir))
-                Directory.Delete(SettingsService.DataDir, recursive: true);
+            deleteData = MessageBox.Show(
+                "Also delete your settings and logs?\n\n" +
+                "Choose No to keep them — if you reinstall later, your\n" +
+                "configuration will be picked up automatically.",
+                "Uninstall WG-Autoconnect",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
         }
-        catch { }
+        if (deleteData)
+        {
+            try
+            {
+                if (Directory.Exists(SettingsService.DataDir))
+                    Directory.Delete(SettingsService.DataDir, recursive: true);
+            }
+            catch { }
+        }
 
         if (!interactive) return;
 
@@ -78,7 +95,8 @@ public static class Uninstaller
         }
 
         MessageBox.Show(
-            "WG-Autoconnect has been uninstalled.",
+            "WG-Autoconnect has been uninstalled." +
+            (deleteData ? "" : "\n\nYour settings were kept and will be used if you reinstall."),
             "Uninstall WG-Autoconnect",
             MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
