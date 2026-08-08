@@ -19,8 +19,4 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
-  </ItemGroup>
-
 </Project>

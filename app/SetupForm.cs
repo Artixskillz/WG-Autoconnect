@@ -341,11 +341,24 @@ public class SetupForm : Form
             ? $"Connected to {_original.TunnelName}"
             : "Disconnected";
 
-        var running = _original.MonitoredApps
-            .Where(app => System.Diagnostics.Process.GetProcessesByName(
-                Path.GetFileNameWithoutExtension(app)).Length > 0)
-            .Select(a => Path.GetFileNameWithoutExtension(a))
-            .ToList();
+        // Reflect the app list as currently edited in the form (not the saved
+        // settings), using a single process snapshot with disposed handles.
+        var monitored = new HashSet<string>(
+            _appsList.Items.Cast<string>().Select(a => Path.GetFileNameWithoutExtension(a)!),
+            StringComparer.OrdinalIgnoreCase);
+
+        var running = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var procs = System.Diagnostics.Process.GetProcesses();
+        try
+        {
+            foreach (var p in procs)
+                if (monitored.Contains(p.ProcessName))
+                    running.Add(p.ProcessName);
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
 
         _liveDetailText = running.Count > 0
             ? $"Running: {string.Join(", ", running)}"
@@ -389,8 +402,23 @@ public class SetupForm : Form
         var existing = _appsList.Items.Cast<string>().ToList();
         using var picker = new ProcessPickerForm(existing);
         if (picker.ShowDialog(this) != DialogResult.OK) return;
+
+        // Match on the extension-less stem, case-insensitively — stored entries
+        // may be hand-edited ("slack", "Slack.EXE") while the picker normalizes
+        // everything to "name.exe".
+        static string Stem(string a) => Path.GetFileNameWithoutExtension(a);
+
+        // Remove monitored apps the user explicitly unchecked in the picker
+        foreach (var app in picker.UncheckedApps)
+        {
+            var idx = _appsList.Items.Cast<string>().ToList()
+                .FindIndex(a => Stem(a).Equals(Stem(app), StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) _appsList.Items.RemoveAt(idx);
+        }
+
         foreach (var app in picker.SelectedApps)
-            if (!_appsList.Items.Contains(app))
+            if (!_appsList.Items.Cast<string>().Any(
+                    a => Stem(a).Equals(Stem(app), StringComparison.OrdinalIgnoreCase)))
                 _appsList.Items.Add(app);
     }
 

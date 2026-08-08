@@ -21,17 +21,44 @@ public static class SettingsService
         try
         {
             if (File.Exists(SettingsPath))
-                return JsonSerializer.Deserialize<AppSettings>(
-                    File.ReadAllText(SettingsPath), JsonOpts) ?? new();
+            {
+                var loaded = JsonSerializer.Deserialize<AppSettings>(
+                    File.ReadAllText(SettingsPath), JsonOpts);
+                if (loaded != null) return Sanitize(loaded);
+            }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Preserve the corrupt file for the user instead of silently
+            // wiping their configuration to defaults.
+            try { File.Copy(SettingsPath, SettingsPath + ".bad", overwrite: true); } catch { }
+            Logger.Error($"Failed to load settings ({ex.Message}) — backed up to settings.json.bad, using defaults.");
+        }
         return new();
+    }
+
+    /// <summary>
+    /// Clamps hand-edited values into safe ranges so a bad settings.json
+    /// can't crash the app at startup (e.g. Timer.Interval must be &gt; 0).
+    /// </summary>
+    private static AppSettings Sanitize(AppSettings s)
+    {
+        s.WireGuardConfigPath ??= "";
+        s.WireGuardExePath = string.IsNullOrWhiteSpace(s.WireGuardExePath)
+            ? @"C:\Program Files\WireGuard\wireguard.exe" : s.WireGuardExePath;
+        s.MonitoredApps ??= [];
+        s.PollIntervalMs     = Math.Clamp(s.PollIntervalMs,     1000, 600_000);
+        s.GracePeriodSeconds = Math.Clamp(s.GracePeriodSeconds,    0,   3600);
+        return s;
     }
 
     public static void Save(AppSettings settings)
     {
         Directory.CreateDirectory(DataDir);
-        File.WriteAllText(SettingsPath, JsonSerializer.Serialize(settings, JsonOpts));
+        // Atomic write: a crash mid-write can't corrupt the real settings file.
+        var tmp = SettingsPath + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(settings, JsonOpts));
+        File.Move(tmp, SettingsPath, overwrite: true);
     }
 
     public static List<string> Validate(AppSettings s)

@@ -2,24 +2,51 @@ namespace WgAutoconnect;
 
 public static class Uninstaller
 {
-    public static void Run()
+    /// <summary>Shows the uninstall confirmation. Nothing is touched unless the user agrees.</summary>
+    public static bool Confirm()
     {
-        var result = MessageBox.Show(
+        return MessageBox.Show(
             "This will uninstall WG-Autoconnect:\n\n" +
+            "  • Disconnect the VPN tunnel if this app connected it\n" +
             "  • Remove startup task from Task Scheduler\n" +
             "  • Delete settings and log files\n\n" +
             "Your WireGuard installation and config files will NOT be affected.\n\n" +
             "Continue?",
             "Uninstall WG-Autoconnect",
-            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+    }
 
-        if (result != DialogResult.Yes) return;
+    /// <summary>Interactive uninstall: confirm, then remove everything.</summary>
+    public static void Run()
+    {
+        if (!Confirm()) return;
+        Execute(interactive: true);
+    }
 
-        // 1. Remove startup task
+    /// <summary>
+    /// Silent uninstall — no prompts. Called by the Inno Setup uninstaller
+    /// via the --uninstall-silent flag.
+    /// </summary>
+    public static void RunSilent() => Execute(interactive: false);
+
+    /// <summary>
+    /// Performs the actual removal steps. Call Confirm() first for interactive
+    /// flows. Pass the running session's settings via liveSettings when
+    /// available — the on-disk settings can diverge from what this session
+    /// actually manages (rejected hand-edit, rename deferred at shutdown).
+    /// </summary>
+    public static void Execute(bool interactive, AppSettings? liveSettings = null)
+    {
+        // 1. Tear down the tunnel if THIS app connected it (marker file).
+        //    Must happen before the data dir (marker + settings) is deleted.
+        //    A tunnel the user connected via the WireGuard GUI is left alone.
+        TearDownTunnelIfOwned(liveSettings);
+
+        // 2. Remove startup task
         if (StartupService.IsRegistered())
             StartupService.Unregister();
 
-        // 2. Delete app data (settings + logs)
+        // 3. Delete app data (settings + logs + marker)
         try
         {
             if (Directory.Exists(SettingsService.DataDir))
@@ -27,7 +54,9 @@ public static class Uninstaller
         }
         catch { }
 
-        // 3. Offer to delete the exe itself
+        if (!interactive) return;
+
+        // 4. Offer to delete the exe itself
         var exePath = Environment.ProcessPath;
         var deleteExe = MessageBox.Show(
             "Uninstall complete!\n\n" +
@@ -55,20 +84,41 @@ public static class Uninstaller
     }
 
     /// <summary>
-    /// Silent uninstall — removes startup task and app data without any prompts.
-    /// Called by the Inno Setup uninstaller via --uninstall-silent flag.
+    /// If this app connected the tunnel (marker present), uninstall the tunnel
+    /// service so uninstalling the app doesn't leave a permanent unmanaged VPN.
     /// </summary>
-    public static void RunSilent()
+    private static void TearDownTunnelIfOwned(AppSettings? liveSettings = null)
     {
-        // Remove startup task
-        if (StartupService.IsRegistered())
-            StartupService.Unregister();
-
-        // Delete app data (settings + logs)
         try
         {
-            if (Directory.Exists(SettingsService.DataDir))
-                Directory.Delete(SettingsService.DataDir, recursive: true);
+            if (!ConnectionMarker.Exists()) return;
+            var settings = liveSettings ?? SettingsService.Load();
+            if (string.IsNullOrWhiteSpace(settings.TunnelName)) return;
+
+            var vpn = new VpnService(settings);
+
+            // The installer kills the app before running --uninstall-silent; an
+            // /installtunnelservice child that survived the kill may still be
+            // creating the service. Poll briefly so a not-yet-visible install
+            // isn't mistaken for "no tunnel" and orphaned. Bail out early when
+            // no wireguard.exe is alive — nothing can still be creating the
+            // service, so a stale marker doesn't stall the uninstaller 10s.
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!vpn.ServiceExists() && DateTime.UtcNow < deadline)
+            {
+                var wg = System.Diagnostics.Process.GetProcessesByName("wireguard");
+                bool installerAlive = wg.Length > 0;
+                foreach (var p in wg) p.Dispose();
+                if (!installerAlive) break;
+                Thread.Sleep(500);
+            }
+
+            // Gate on service EXISTENCE, not RUNNING — a START_PENDING service
+            // must be uninstalled too. Release the marker only once it's gone.
+            if (vpn.ServiceExists())
+                vpn.DisconnectSync();
+            if (!vpn.ServiceExists())
+                ConnectionMarker.Clear();
         }
         catch { }
     }

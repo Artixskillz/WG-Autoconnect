@@ -17,13 +17,16 @@ WG-Autoconnect is a lightweight Windows tray application that monitors your runn
 - **Process picker** — Browse and select from currently running processes instead of typing names manually
 - **Auto-detection** — Automatically finds your WireGuard installation and `.conf` files
 - **System tray icon** — Color-coded icon shows VPN state at a glance (red = connected, gray = disconnected, orange = transitioning, yellow = paused)
-- **Hands-off manual override** — if you manually connect or disconnect WireGuard yourself, the app backs off and won't interfere until apps next trigger automation
-- **Force Connect / Disconnect** — tray menu shortcuts for immediate VPN control
+- **Hands-off manual override** — if you manually connect or disconnect WireGuard yourself (even a tunnel this app connected), the app backs off and won't interfere until apps next trigger automation
+- **Ownership tracking** — remembers that *it* connected the tunnel across restarts, crashes, and upgrades, so it keeps managing (and can disconnect) its own connection; a VPN you connected yourself is never touched
+- **Force Connect / Disconnect** — tray menu shortcuts for immediate VPN control; a forced connection stays up even with no monitored apps running
 - **Startup registration** — One-click "Run at Windows Startup" via Task Scheduler (elevated, no UAC prompt on login)
 - **Professional installer** — Inno Setup installer with EULA, desktop shortcut option, and auto-start registration (or use the portable single-file exe)
-- **Config file watcher** — External changes to `settings.json` are picked up automatically
+- **Config file watcher** — External changes to `settings.json` are picked up automatically (saves are atomic; a corrupt file is backed up instead of silently reset)
 - **Log rotation** — Timestamped log file, auto-rotates at 512 KB, viewable from the tray menu
-- **Auto-update check** — Notifies you on startup if a newer release is available (also available from tray menu)
+- **Auto-update check** — Notifies you on startup if a newer release is available; click the notification to open the download page
+- **DPI-aware tray icon** — Crisp at 125%/150% display scaling
+- **Single instance** — Launching the app again focuses the running instance's settings window
 - **Uninstaller** — Clean removal from tray menu or `--uninstall` flag (removes startup task, settings, logs)
 - **Single-file exe** — Self-contained, no installer needed, no runtime dependencies
 
@@ -66,7 +69,8 @@ Grab the latest release from the [Releases](https://github.com/Artixskillz/WG-Au
 | Run at Startup | Toggle Task Scheduler registration (elevated, no UAC on login) |
 | Settings | Open the settings panel with live VPN status |
 | View Log | Open `app.log` in Notepad |
-| Check for Updates | Check GitHub for a newer release |
+| Open Data Folder | Open `%AppData%\WG-Autoconnect` in Explorer |
+| Check for Updates | Check GitHub for a newer release (click the notification to download) |
 | Uninstall | Remove startup task, settings, logs, and optionally the exe |
 | Exit | Exit the app (disconnects VPN if "Disconnect on exit" is enabled) |
 
@@ -75,9 +79,11 @@ Grab the latest release from the [Releases](https://github.com/Artixskillz/WG-Au
 Every few seconds (configurable), WG-Autoconnect checks if any of your monitored processes are running:
 
 - **App detected + VPN down** → connects the tunnel via `wireguard.exe /installtunnelservice`
-- **No apps + VPN up** → starts the grace period, then disconnects via `/uninstalltunnelservice`
-- **Manual VPN connection** → if you connect or disconnect WireGuard yourself (outside this app), automation pauses until all monitored apps close and reopen
+- **No apps + VPN up** → starts the grace period, then disconnects via `/uninstalltunnelservice` (only if this app connected it)
+- **Manual VPN change** → if you connect or disconnect WireGuard yourself (outside this app) — including disconnecting a tunnel this app established — automation backs off until all monitored apps close and reopen
+- **Force Connect** → connects and stays connected, even with no monitored apps running, until an app launches and normal automation resumes
 - **Force Disconnect** → clears the automation flags so it won't immediately reconnect
+- **Restart/upgrade** → an ownership marker in the data folder lets the app resume managing a tunnel it connected before it was restarted or upgraded
 
 Connection status is verified by checking the `WireGuardTunnel$<name>` Windows service state directly (no shell commands spawned).
 
@@ -108,7 +114,7 @@ You can edit this file directly — changes are picked up automatically via a fi
 WG-Autoconnect.exe --uninstall
 ```
 
-Both methods remove the Task Scheduler startup entry and delete settings/logs from `%AppData%\WG-Autoconnect`. Your WireGuard installation and `.conf` files are never touched.
+Both methods disconnect the tunnel if this app connected it, remove the Task Scheduler startup entry, and delete settings/logs from `%AppData%\WG-Autoconnect`. Your WireGuard installation and `.conf` files are never touched — and a tunnel you connected yourself via the WireGuard app is left running.
 
 ## Building from Source
 

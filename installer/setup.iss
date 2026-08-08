@@ -53,10 +53,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
-; Remove startup task on uninstall
-Filename: "schtasks"; Parameters: "/delete /tn ""WG-Autoconnect"" /f"; Flags: runhidden; RunOnceId: "RemoveStartupTask"
-; Run the app's own uninstaller to clean up %AppData% data
+; Stop the running app first — otherwise it keeps automating (and could
+; reconnect the tunnel) while we're uninstalling underneath it
+Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillApp"
+; Run the app's own silent uninstaller: tears down the tunnel if this app
+; connected it (ownership marker), removes the startup task, deletes %AppData%
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-silent"; Flags: runhidden; RunOnceId: "CleanAppData"
+; Belt-and-braces: ensure the startup task is gone even if the step above failed
+Filename: "schtasks"; Parameters: "/delete /tn ""WG-Autoconnect"" /f"; Flags: runhidden; RunOnceId: "RemoveStartupTask"
 
 [Code]
 var

@@ -2,61 +2,81 @@ namespace WgAutoconnect;
 
 public sealed class AppContext : ApplicationContext
 {
-    private AppSettings _settings = null!;
-    private readonly VpnService _vpn = null!;
+    private const string ReleasesFallbackUrl = "https://github.com/Artixskillz/WG-Autoconnect/releases/latest";
+
+    private AppSettings _settings;
+    private readonly VpnService _vpn;
 
     // Tray
-    private readonly NotifyIcon        _trayIcon = null!;
-    private readonly ContextMenuStrip  _menu = null!;
-    private readonly ToolStripMenuItem _statusItem = null!;
-    private readonly ToolStripMenuItem _pauseItem = null!;
-    private readonly ToolStripMenuItem _startupItem = null!;
-    private Icon? _currentIcon;
+    private readonly NotifyIcon        _trayIcon;
+    private readonly ContextMenuStrip  _menu;
+    private readonly ToolStripMenuItem _statusItem;
+    private readonly ToolStripMenuItem _pauseItem;
+    private readonly ToolStripMenuItem _startupItem;
 
     // Timers — WinForms timers fire on the UI thread, no cross-thread issues.
-    private readonly System.Windows.Forms.Timer _pollTimer = null!;
-    private readonly System.Windows.Forms.Timer _graceTimer = null!;
-    private readonly System.Windows.Forms.Timer _reloadDebounce = null!;
+    private readonly System.Windows.Forms.Timer _pollTimer;
+    private readonly System.Windows.Forms.Timer _graceTimer;
+    private readonly System.Windows.Forms.Timer _reloadDebounce;
 
     // Config file watcher
     private FileSystemWatcher? _fileWatcher;
-    private readonly SynchronizationContext _syncContext = null!;
+    private readonly SynchronizationContext _syncContext;
 
     // State
     private bool _isPaused;
     private bool _isTransitioning;
     private bool _isScriptConnected;   // true only when THIS app connected the VPN
     private bool _userOverride;        // true when user manually connected/disconnected outside this app
+    private bool _forcedConnect;       // true after Force Connect with no apps running — blocks the grace disconnect
     private bool _disconnectPending;
     private bool _lastVpnState;
+    private bool _settingsOpen;
+    private bool _shuttingDown;
+    private List<string> _lastRunningApps = [];
+    private TrayState? _lastTrayState;
+    private string? _updateUrl;
+    private bool _lastBalloonIsUpdate;
+    private AppSettings? _pendingSettings;   // settings change that arrived mid-transition
 
     // Notification cooldown
     private string _lastBalloonMessage = "";
     private DateTime _lastBalloonTime = DateTime.MinValue;
     private static readonly TimeSpan BalloonCooldown = TimeSpan.FromSeconds(30);
 
-    public AppContext()
+    public AppContext(AppSettings settings, bool isFirstRun, EventWaitHandle showSettingsSignal)
     {
+        // Program.Main installs a WindowsFormsSynchronizationContext before we
+        // are constructed, so Current is guaranteed non-null here.
         _syncContext = SynchronizationContext.Current!;
-        _settings   = SettingsService.Load();
+        _settings    = settings;
+        _vpn         = new VpnService(_settings);
 
-        bool isFirstRun = SettingsService.Validate(_settings).Count > 0;
-        if (isFirstRun)
+        // Resume ownership of a tunnel this app connected in a previous session
+        // (survives restarts, crashes, and installer upgrades via the marker file).
+        bool vpnUpAtStart = _vpn.IsConnected();
+        if (ConnectionMarker.Exists())
         {
-            using var form = new SetupForm(_settings);
-            if (form.ShowDialog() != DialogResult.OK)
+            if (vpnUpAtStart)
             {
-                Application.Exit();
-                return;
+                _isScriptConnected = true;
+                // A forced connection stays forced across restarts — otherwise a
+                // resumed tunnel would be grace-disconnected seconds after launch.
+                _forcedConnect = ConnectionMarker.IsForced();
+                Logger.Info("Resuming management of tunnel connected in a previous session.");
             }
-            _settings = SettingsService.Load();
+            else if (!_vpn.ServiceExists())
+            {
+                // Service genuinely absent — stale marker from a failed install.
+                // (A service merely in START_PENDING at boot keeps the marker;
+                // DetectExternalChanges re-adopts it once it reaches RUNNING.)
+                ConnectionMarker.Clear();
+            }
         }
-
-        _vpn = new VpnService(_settings);
+        _lastVpnState = vpnUpAtStart;
 
         // Build tray UI
-        _currentIcon = IconRenderer.Create(TrayState.Disconnected);
-        _menu        = new ContextMenuStrip();
+        _menu = new ContextMenuStrip();
 
         var header = new ToolStripMenuItem("WG-Autoconnect") { Enabled = false };
         _statusItem  = new ToolStripMenuItem("Checking...") { Enabled = false };
@@ -77,6 +97,7 @@ public sealed class AppContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Settings", null, (_, _) => OpenSettings()));
         _menu.Items.Add(new ToolStripMenuItem("View Log",  null, OnViewLog));
+        _menu.Items.Add(new ToolStripMenuItem("Open Data Folder", null, OnOpenDataFolder));
         _menu.Items.Add(new ToolStripMenuItem("Check for Updates", null, OnCheckForUpdates));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Uninstall", null, OnUninstall));
@@ -84,12 +105,13 @@ public sealed class AppContext : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Icon             = _currentIcon,
+            Icon             = IconRenderer.Get(TrayState.Disconnected),
             Text             = "WG-Autoconnect",
             ContextMenuStrip = _menu,
             Visible          = true,
         };
-        _trayIcon.DoubleClick += (_, _) => OpenSettings();
+        _trayIcon.DoubleClick       += (_, _) => OpenSettings();
+        _trayIcon.BalloonTipClicked += OnBalloonClicked;
 
         // Timers
         _pollTimer  = new System.Windows.Forms.Timer { Interval = _settings.PollIntervalMs };
@@ -103,6 +125,10 @@ public sealed class AppContext : ApplicationContext
 
         // Watch settings.json for external changes
         StartFileWatcher();
+
+        // A second launched instance signals this handle instead of showing a
+        // dead-end message box — surface our Settings window when it fires.
+        StartShowSettingsListener(showSettingsSignal);
 
         Logger.Info($"Started | Tunnel: {_settings.TunnelName} | Watching: {string.Join(", ", _settings.MonitoredApps)}");
         CheckAndToggle();
@@ -126,8 +152,9 @@ public sealed class AppContext : ApplicationContext
         _ = UpdateChecker.CheckForUpdateAsync((tag, url) =>
             _syncContext.Post(_ =>
             {
+                _updateUrl = string.IsNullOrEmpty(url) ? ReleasesFallbackUrl : url;
                 Logger.Info($"Update available: {tag}");
-                ShowBalloon($"Update {tag} available! Right-click tray → check releases.", ToolTipIcon.Info);
+                ShowBalloon($"Update {tag} available — click this notification to download.", ToolTipIcon.Info, isUpdate: true);
             }, null));
     }
 
@@ -137,7 +164,7 @@ public sealed class AppContext : ApplicationContext
 
     private async void CheckAndToggle()
     {
-        if (_isPaused || _isTransitioning) return;
+        if (_shuttingDown || _isPaused || _isTransitioning) return;
 
         try
         {
@@ -145,32 +172,22 @@ public sealed class AppContext : ApplicationContext
             bool appsRunning = runningApps.Count > 0;
             bool vpnUp       = _vpn.IsConnected();
             UpdateStatus(vpnUp, runningApps);
-
-            // Detect manual VPN changes by the user (outside this app)
-            if (!_isTransitioning && vpnUp != _lastVpnState)
-            {
-                if (vpnUp && !_isScriptConnected)
-                {
-                    // VPN came up but we didn't do it — user connected manually
-                    _userOverride = true;
-                    Logger.Info("Manual VPN connection detected — automation will not interfere.");
-                }
-                else if (!vpnUp && _lastVpnState && !_isScriptConnected)
-                {
-                    // VPN went down but we didn't do it — user disconnected manually
-                    _userOverride = true;
-                    Logger.Info("Manual VPN disconnection detected — automation will not interfere.");
-                }
-            }
-            _lastVpnState = vpnUp;
+            DetectExternalChanges(vpnUp);
 
             if (appsRunning)
             {
+                if (_forcedConnect)
+                {
+                    // An app is running — normal automation resumes; downgrade the
+                    // persisted marker so a restart doesn't revive the forced flag.
+                    _forcedConnect = false;
+                    if (_isScriptConnected) ConnectionMarker.Set(forced: false);
+                }
                 if (_disconnectPending)
                 {
                     _graceTimer.Stop();
                     _disconnectPending = false;
-                    Logger.Info("Grace-period disconnect cancelled \u2014 app came back.");
+                    Logger.Info("Grace-period disconnect cancelled — app came back.");
                 }
                 if (!vpnUp && !_userOverride)
                     await DoConnect();
@@ -181,7 +198,7 @@ public sealed class AppContext : ApplicationContext
                 // automation resumes next time an app launches
                 _userOverride = false;
 
-                if (vpnUp && !_disconnectPending && _isScriptConnected)
+                if (vpnUp && !_disconnectPending && _isScriptConnected && !_forcedConnect)
                 {
                     _disconnectPending   = true;
                     _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
@@ -196,13 +213,64 @@ public sealed class AppContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Detects VPN state changes made outside this app (WireGuard GUI, wg CLI)
+    /// and backs off instead of fighting the user. Our own transitions update
+    /// _lastVpnState when they complete, so they never register as edges here.
+    /// </summary>
+    private void DetectExternalChanges(bool vpnUp)
+    {
+        if (vpnUp != _lastVpnState)
+        {
+            if (vpnUp && !_isScriptConnected)
+            {
+                if (ConnectionMarker.Exists())
+                {
+                    // A tunnel WE installed reached RUNNING after our confirmation
+                    // window (slow driver init, boot race) — re-adopt it rather
+                    // than misclassifying our own connect as a manual one.
+                    _isScriptConnected = true;
+                    _forcedConnect     = ConnectionMarker.IsForced();
+                    Logger.Info("Tunnel installed by this app reached running state — resuming management.");
+                }
+                else
+                {
+                    // VPN came up but we didn't do it — user connected manually
+                    _userOverride = true;
+                    Logger.Info("Manual VPN connection detected — automation will not interfere.");
+                }
+            }
+            else if (!vpnUp)
+            {
+                if (_isScriptConnected)
+                {
+                    // The tunnel we connected was torn down externally —
+                    // respect the user's action instead of reconnecting.
+                    _isScriptConnected = false;
+                    ConnectionMarker.Clear();
+                    Logger.Info("Script-connected tunnel was disconnected externally — automation will not interfere.");
+                }
+                else
+                    Logger.Info("Manual VPN disconnection detected — automation will not interfere.");
+                _userOverride = true;
+
+                // Ownership is gone — a still-armed grace disconnect must not
+                // fire against whatever the user connects next.
+                if (_disconnectPending) { _graceTimer.Stop(); _disconnectPending = false; }
+            }
+        }
+        _lastVpnState = vpnUp;
+    }
+
     private async void OnGraceExpired(object? sender, EventArgs e)
     {
         _graceTimer.Stop();
         _disconnectPending = false;
         try
         {
-            if (GetRunningApps().Count == 0 && _vpn.IsConnected() && !_isTransitioning)
+            // Re-verify ownership: it may have been relinquished while the
+            // timer was armed (manual disconnect, settings change).
+            if (_isScriptConnected && GetRunningApps().Count == 0 && _vpn.IsConnected() && !_isTransitioning)
                 await DoDisconnect();
         }
         catch (Exception ex)
@@ -213,79 +281,156 @@ public sealed class AppContext : ApplicationContext
 
     private async Task DoConnect()
     {
-        _isTransitioning   = true;
-        _isScriptConnected = true;
+        // Capture up front: ApplyPendingSettings in the finally can swap
+        // _settings, and the post-finally messaging must name THIS tunnel.
+        var tunnel = _settings.TunnelName;
+
+        _isTransitioning = true;
         UpdateStatus(null);
-        ShowBalloon($"Connecting to {_settings.TunnelName}...");
-        Logger.Info($"Connecting | Tunnel: {_settings.TunnelName}");
+        ShowBalloon($"Connecting to {tunnel}...");
+        Logger.Info($"Connecting | Tunnel: {tunnel}");
 
-        await _vpn.ConnectAsync();
-        bool ok = await _vpn.WaitForConnected();
+        // Claim ownership BEFORE issuing the install: once /installtunnelservice
+        // is spawned the tunnel WILL exist, and an exit/uninstall racing this
+        // transition must still know to tear it down. If the connect lands after
+        // our confirmation window, DetectExternalChanges re-adopts via this marker.
+        ConnectionMarker.Set(forced: _forcedConnect);
 
-        if (!ok)
+        bool ok = false;
+        try
         {
-            Logger.Info("Connect not confirmed, retrying...");
             await _vpn.ConnectAsync();
             ok = await _vpn.WaitForConnected();
+            // Never retry during shutdown: this continuation can resume inside
+            // the uninstaller's modal pumps AFTER teardown already ran, and a
+            // retry here would reinstall the tunnel post-uninstall.
+            if (!ok && !_shuttingDown)
+            {
+                Logger.Info("Connect not confirmed, retrying...");
+                await _vpn.ConnectAsync();
+                ok = await _vpn.WaitForConnected();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Connect failed: {ex.Message}");
+        }
+        finally
+        {
+            // Always unwind, even on exceptions — a stuck _isTransitioning
+            // would permanently disable all automation and both Force buttons.
+            // Ownership follows the ACTUAL service state, not the confirmation
+            // flag. The marker survives a not-yet-RUNNING service (re-adoption
+            // handles slow starts), but a DEFINITIVELY failed install — no
+            // service at all — must release it, or a later manual connection
+            // of the same tunnel would be mis-adopted and grace-disconnected.
+            _isTransitioning   = false;
+            _lastVpnState      = _vpn.IsConnected();
+            _isScriptConnected = _lastVpnState;
+            if (!_lastVpnState && !_vpn.ServiceExists()) ConnectionMarker.Clear();
+            UpdateStatus(_lastVpnState);
+            ApplyPendingSettings();
         }
 
-        _isTransitioning = false;
         if (ok)
         {
-            Logger.Info($"Connection verified | Tunnel: {_settings.TunnelName}");
-            UpdateStatus(true);
-            ShowBalloon($"Connected to {_settings.TunnelName}.");
+            Logger.Info($"Connection verified | Tunnel: {tunnel}");
+            ShowBalloon($"Connected to {tunnel}.");
+        }
+        else if (_shuttingDown)
+        {
+            // Retry was deliberately skipped — don't log a phantom retry
+            // failure or flash an error balloon during exit/uninstall.
+            Logger.Info("Connect unconfirmed at shutdown — retry skipped; teardown will handle the tunnel.");
         }
         else
         {
             Logger.Error("VPN failed to connect after retry.");
-            _isScriptConnected = false;
-            UpdateStatus(false);
-            ShowBalloon($"Failed to connect to {_settings.TunnelName}.", ToolTipIcon.Error);
+            ShowBalloon($"Failed to connect to {tunnel}.", ToolTipIcon.Error);
         }
     }
 
     private async Task DoDisconnect()
     {
+        // Capture up front — see DoConnect.
+        var tunnel = _settings.TunnelName;
+
         _isTransitioning = true;
         UpdateStatus(null);
-        ShowBalloon($"Disconnecting from {_settings.TunnelName}...");
-        Logger.Info($"Disconnecting | Tunnel: {_settings.TunnelName}");
+        ShowBalloon($"Disconnecting from {tunnel}...");
+        Logger.Info($"Disconnecting | Tunnel: {tunnel}");
 
-        await _vpn.DisconnectAsync();
-        bool ok = await _vpn.WaitForDisconnected();
-
-        if (!ok)
+        bool ok = false;
+        try
         {
-            Logger.Info("Disconnect not confirmed, retrying...");
             await _vpn.DisconnectAsync();
             ok = await _vpn.WaitForDisconnected();
+            if (!ok && !_shuttingDown)   // see DoConnect — no retries during shutdown
+            {
+                Logger.Info("Disconnect not confirmed, retrying...");
+                await _vpn.DisconnectAsync();
+                ok = await _vpn.WaitForDisconnected();
+            }
         }
-
-        _isTransitioning   = false;
-        _isScriptConnected = false;
-        UpdateStatus(_vpn.IsConnected());
+        catch (Exception ex)
+        {
+            Logger.Error($"Disconnect failed: {ex.Message}");
+        }
+        finally
+        {
+            // If the tunnel is STILL up (uninstall failed, service stuck),
+            // keep ownership so later polls retry the disconnect and
+            // exit/uninstall teardown still fire — but only if it was OURS
+            // (marker): a failed Force Disconnect of a user-connected tunnel
+            // must not adopt it. Only a confirmed teardown releases the marker.
+            _isTransitioning   = false;
+            _lastVpnState      = _vpn.IsConnected();
+            _isScriptConnected = _lastVpnState && ConnectionMarker.Exists();
+            if (!_lastVpnState) ConnectionMarker.Clear();
+            UpdateStatus(_lastVpnState);
+            ApplyPendingSettings();
+        }
 
         if (ok)
         {
-            Logger.Info($"Disconnect verified | Tunnel: {_settings.TunnelName}");
-            ShowBalloon($"Disconnected from {_settings.TunnelName}.");
+            Logger.Info($"Disconnect verified | Tunnel: {tunnel}");
+            ShowBalloon($"Disconnected from {tunnel}.");
+        }
+        else if (_shuttingDown)
+        {
+            Logger.Info("Disconnect unconfirmed at shutdown — retry skipped; teardown will handle the tunnel.");
         }
         else
         {
             Logger.Error("VPN failed to disconnect after retry.");
-            ShowBalloon($"Failed to disconnect from {_settings.TunnelName}.", ToolTipIcon.Error);
+            ShowBalloon($"Failed to disconnect from {tunnel}.", ToolTipIcon.Error);
         }
     }
 
-    private List<string> GetRunningApps() =>
-        _settings.MonitoredApps
-            .Where(app => System.Diagnostics.Process.GetProcessesByName(
-                Path.GetFileNameWithoutExtension(app)).Length > 0)
-            .ToList();
+    /// <summary>One process-table snapshot for all monitored apps; handles disposed.</summary>
+    private List<string> GetRunningApps()
+    {
+        var monitored = new HashSet<string>(
+            _settings.MonitoredApps.Select(a => Path.GetFileNameWithoutExtension(a)!),
+            StringComparer.OrdinalIgnoreCase);
+
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var procs = System.Diagnostics.Process.GetProcesses();
+        try
+        {
+            foreach (var p in procs)
+                if (monitored.Contains(p.ProcessName))
+                    found.Add(p.ProcessName);
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
+        return [.. found];
+    }
 
     // -------------------------------------------------------------------------
-    // Config file watcher
+    // Config file watcher + settings application
     // -------------------------------------------------------------------------
 
     private void StartFileWatcher()
@@ -295,11 +440,18 @@ public sealed class AppContext : ApplicationContext
             Directory.CreateDirectory(SettingsService.DataDir);
             _fileWatcher = new FileSystemWatcher(SettingsService.DataDir, "settings.json")
             {
-                NotifyFilter        = NotifyFilters.LastWrite,
+                // FileName + CreationTime + Size so rename-based saves
+                // (VS Code and most editors) also trigger a reload.
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
+                             | NotifyFilters.CreationTime | NotifyFilters.Size,
                 EnableRaisingEvents = true,
             };
-            _fileWatcher.Changed += (_, _) =>
+            void QueueReload() =>
                 _syncContext.Post(_ => { _reloadDebounce.Stop(); _reloadDebounce.Start(); }, null);
+            _fileWatcher.Changed += (_, _) => QueueReload();
+            _fileWatcher.Created += (_, _) => QueueReload();
+            _fileWatcher.Renamed += (_, _) => QueueReload();
+            _fileWatcher.Error   += (_, e) => Logger.Warn($"Settings watcher error: {e.GetException().Message}");
         }
         catch (Exception ex)
         {
@@ -310,12 +462,86 @@ public sealed class AppContext : ApplicationContext
     private void ReloadSettings()
     {
         var newSettings = SettingsService.Load();
-        if (SettingsService.Validate(newSettings).Count > 0) return;
+        if (SettingsService.Validate(newSettings).Count > 0)
+        {
+            Logger.Warn("External settings change ignored — new settings failed validation.");
+            return;
+        }
+        ApplySettings(newSettings);
+        UpdateStatus(_vpn.IsConnected());
+        Logger.Info("Settings reloaded (external change detected).");
+    }
+
+    /// <summary>Applies new settings, tearing down the old tunnel first if it changed while we own it.</summary>
+    private void ApplySettings(AppSettings newSettings)
+    {
+        // Never swap settings under an in-flight transition: DoConnect would
+        // resume against the NEW tunnel name, orphan the old tunnel, and
+        // install both. The transition's finally applies the pending settings.
+        if (_isTransitioning)
+        {
+            _pendingSettings = newSettings;
+            Logger.Info("Settings change deferred until the current VPN transition completes.");
+            return;
+        }
+
+        if (_isScriptConnected
+            && !string.Equals(_settings.TunnelName, newSettings.TunnelName, StringComparison.OrdinalIgnoreCase)
+            && _vpn.IsConnected())
+        {
+            // Without this, the old tunnel would be orphaned — never uninstalled —
+            // and the next poll would install a second tunnel on top of it.
+            Logger.Info($"Tunnel changed ({_settings.TunnelName} → {newSettings.TunnelName}) — disconnecting old tunnel.");
+            _vpn.DisconnectSync();          // _vpn still holds the old settings
+            _isScriptConnected = false;
+            ConnectionMarker.Clear();
+            _lastVpnState = false;
+            if (_disconnectPending) { _graceTimer.Stop(); _disconnectPending = false; }
+        }
+
         _settings = newSettings;
         _vpn.UpdateSettings(newSettings);
         _pollTimer.Interval  = _settings.PollIntervalMs;
         _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
-        Logger.Info("Settings reloaded (external change detected).");
+    }
+
+    /// <summary>Applies a settings change that arrived while a transition was in flight.</summary>
+    private void ApplyPendingSettings()
+    {
+        // Never retarget _vpn/_settings once shutdown has begun: the exit and
+        // uninstall teardown gates must keep checking the tunnel the in-flight
+        // transition actually installed, not a renamed one. The pending change
+        // is moot — it's already on disk and the next launch will load it.
+        if (_shuttingDown) return;
+        if (_pendingSettings == null) return;
+        var pending = _pendingSettings;
+        _pendingSettings = null;
+        ApplySettings(pending);
+        UpdateStatus(_vpn.IsConnected());
+        Logger.Info("Deferred settings change applied.");
+    }
+
+    // -------------------------------------------------------------------------
+    // Second-instance activation
+    // -------------------------------------------------------------------------
+
+    private void StartShowSettingsListener(EventWaitHandle signal)
+    {
+        var thread = new Thread(() =>
+        {
+            while (true)
+            {
+                try
+                {
+                    signal.WaitOne();
+                    _syncContext.Post(_ => OpenSettings(), null);
+                }
+                catch (ObjectDisposedException) { return; }
+                catch (InvalidOperationException) { return; }   // context's marshaling control destroyed during shutdown
+            }
+        })
+        { IsBackground = true, Name = "ShowSettingsSignal" };
+        thread.Start();
     }
 
     // -------------------------------------------------------------------------
@@ -344,10 +570,11 @@ public sealed class AppContext : ApplicationContext
     {
         try
         {
-            if (_isTransitioning) return;
+            if (_shuttingDown || _isTransitioning) return;
             if (_vpn.IsConnected()) { ShowBalloon("VPN is already connected."); return; }
             if (_disconnectPending) { _graceTimer.Stop(); _disconnectPending = false; }
-            _userOverride = false;
+            _userOverride  = false;
+            _forcedConnect = true;   // survives "no apps running" polls — no grace disconnect
             Logger.Info("Force-connect by user.");
             await DoConnect();
         }
@@ -358,11 +585,11 @@ public sealed class AppContext : ApplicationContext
     {
         try
         {
-            if (_isTransitioning) return;
+            if (_shuttingDown || _isTransitioning) return;
             if (!_vpn.IsConnected()) { ShowBalloon("VPN is already disconnected."); return; }
             if (_disconnectPending) { _graceTimer.Stop(); _disconnectPending = false; }
-            _isScriptConnected = false;
-            _userOverride = false;
+            _userOverride  = false;
+            _forcedConnect = false;
             Logger.Info("Force-disconnect by user.");
             await DoDisconnect();
         }
@@ -396,6 +623,10 @@ public sealed class AppContext : ApplicationContext
 
     private void OpenSettings()
     {
+        if (_shuttingDown) return;   // no modal dialogs while exit/uninstall teardown pumps events
+        if (_settingsOpen) return;   // second-instance signal or double-click while already open
+        _settingsOpen = true;
+
         // Suppress file watcher while the form is open to avoid
         // double-reload / disposal conflicts when Save writes settings.json
         if (_fileWatcher != null) _fileWatcher.EnableRaisingEvents = false;
@@ -404,14 +635,12 @@ public sealed class AppContext : ApplicationContext
         try
         {
             using var form = new SetupForm(_settings, _vpn);
-            if (form.ShowDialog() != DialogResult.OK) return;
-
-            _settings = SettingsService.Load();
-            _vpn.UpdateSettings(_settings);
-            _pollTimer.Interval  = _settings.PollIntervalMs;
-            _graceTimer.Interval = Math.Max(1, _settings.GracePeriodSeconds * 1000);
-            UpdateStatus(_vpn.IsConnected());
-            Logger.Info($"Settings updated by user | Tunnel: {_settings.TunnelName} | Watching: {string.Join(", ", _settings.MonitoredApps)}");
+            if (form.ShowDialog() == DialogResult.OK)
+            {
+                ApplySettings(SettingsService.Load());
+                UpdateStatus(_vpn.IsConnected());
+                Logger.Info($"Settings updated by user | Tunnel: {_settings.TunnelName} | Watching: {string.Join(", ", _settings.MonitoredApps)}");
+            }
         }
         catch (Exception ex)
         {
@@ -419,6 +648,7 @@ public sealed class AppContext : ApplicationContext
         }
         finally
         {
+            _settingsOpen = false;
             if (_fileWatcher != null) _fileWatcher.EnableRaisingEvents = true;
         }
     }
@@ -429,11 +659,28 @@ public sealed class AppContext : ApplicationContext
         await UpdateChecker.CheckForUpdateAsync((tag, url) =>
             _syncContext.Post(_ =>
             {
+                _updateUrl = string.IsNullOrEmpty(url) ? ReleasesFallbackUrl : url;
                 Logger.Info($"Update available: {tag}");
-                ShowBalloon($"Update {tag} available! Visit the releases page to download.", ToolTipIcon.Info);
+                ShowBalloon($"Update {tag} available — click this notification to download.", ToolTipIcon.Info, isUpdate: true);
             }, null),
             () => _syncContext.Post(_ =>
                 ShowBalloon("You're running the latest version."), null));
+    }
+
+    private void OnBalloonClicked(object? sender, EventArgs e)
+    {
+        // Only navigate when the balloon being clicked is the update one —
+        // clicking "Connected to X." must not surprise-open a browser.
+        if (!_lastBalloonIsUpdate || string.IsNullOrEmpty(_updateUrl)) return;
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(_updateUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not open release page: {ex.Message}");
+        }
     }
 
     private void OnViewLog(object? sender, EventArgs e)
@@ -444,29 +691,99 @@ public sealed class AppContext : ApplicationContext
             ShowBalloon("No log file yet.");
     }
 
+    private void OnOpenDataFolder(object? sender, EventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(SettingsService.DataDir);
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{SettingsService.DataDir}\"")
+                { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not open data folder: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Lets an in-flight connect/disconnect finish before shutdown teardown
+    /// reads ownership state. The transition's continuations are posted to
+    /// this thread's message loop, so we must pump while waiting.
+    /// </summary>
+    private void SettleTransition()
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (_isTransitioning && DateTime.UtcNow < deadline)
+        {
+            Application.DoEvents();
+            Thread.Sleep(50);
+        }
+    }
+
     private void OnUninstall(object? sender, EventArgs e)
     {
+        if (_shuttingDown) return;
+        // Confirm BEFORE touching anything — cancelling must be a no-op.
+        // Re-check the flag after the modal returns: its message pump can have
+        // run a second Uninstall (or Exit) to completion while it was open.
+        if (!Uninstaller.Confirm() || _shuttingDown) return;
+
+        _shuttingDown = true;
         _pollTimer.Stop();
         _graceTimer.Stop();
+        SettleTransition();
+        _trayIcon.Visible = false;
 
-        if (_settings.DisconnectOnExit && _isScriptConnected && _vpn.IsConnected())
+        // Tear down with the LIVE session's settings — the on-disk settings
+        // Execute would load can diverge (e.g. a rejected hand-edit). Gate on
+        // ServiceExists, NOT IsConnected: a just-installed service still in
+        // START_PENDING must be uninstalled too, or it becomes a permanent
+        // unmanaged tunnel the moment it reaches RUNNING after we exit.
+        // Only release the marker once the service is confirmed gone, so
+        // Execute's disk-settings fallback still runs if this teardown fails.
+        if (ConnectionMarker.Exists() && _vpn.ServiceExists())
+            _vpn.DisconnectSync();
+        // Keep the marker while a transition is provably still in flight — the
+        // install child may not have created the service yet, and Execute's
+        // 10s appearance-poll (which needs the marker) is what catches it.
+        if (!_isTransitioning && !_vpn.ServiceExists())
+            ConnectionMarker.Clear();
+
+        // Execute handles any remaining teardown (via marker), removes the
+        // startup task, and deletes app data. Pass the LIVE settings so the
+        // fallback targets the tunnel this session actually manages even if
+        // the on-disk settings have diverged (rejected edit, deferred rename).
+        Uninstaller.Execute(interactive: true, _settings);
+
+        // Final sweep: a transition that outlived the settle window could have
+        // resumed during Execute's modal pumps — if the service reappeared,
+        // remove it before exiting.
+        if (_vpn.ServiceExists())
             _vpn.DisconnectSync();
 
-        _trayIcon.Visible = false;
-        Uninstaller.Run();
         Application.Exit();
     }
 
     private void OnExit(object? sender, EventArgs e)
     {
+        if (_shuttingDown) return;
+        _shuttingDown = true;
         _pollTimer.Stop();
         _graceTimer.Stop();
+        SettleTransition();
 
-        if (_settings.DisconnectOnExit && _isScriptConnected && _vpn.IsConnected())
+        // Marker (not _isScriptConnected) is the durable ownership truth — it is
+        // set BEFORE an install is issued. Gate on ServiceExists, not
+        // IsConnected, so an install still in START_PENDING is torn down too.
+        if (_settings.DisconnectOnExit && ConnectionMarker.Exists() && _vpn.ServiceExists())
         {
             Logger.Info("Disconnecting VPN on exit...");
             _vpn.DisconnectSync();
+            if (!_vpn.ServiceExists()) ConnectionMarker.Clear();
         }
+        // If DisconnectOnExit is off, the marker stays behind so the next
+        // launch resumes management of the still-connected tunnel.
 
         Logger.Info("Exiting.");
         _trayIcon.Visible = false;
@@ -479,6 +796,10 @@ public sealed class AppContext : ApplicationContext
 
     private void UpdateStatus(bool? vpnUp, List<string>? runningApps = null)
     {
+        // Remember the last known running-apps list so the tooltip keeps its
+        // "Running:" line when UpdateStatus is called without a fresh scan.
+        if (runningApps != null) _lastRunningApps = runningApps;
+
         var state =
             _isTransitioning  ? TrayState.Transitioning :
             _isPaused         ? TrayState.Paused        :
@@ -491,29 +812,28 @@ public sealed class AppContext : ApplicationContext
 
         _statusItem.Text = label;
 
-        // Build tooltip — show which monitored apps are running
         var tooltip = $"WG-Autoconnect\n{label}";
-        if (runningApps?.Count > 0)
-        {
-            var names = string.Join(", ", runningApps.Select(Path.GetFileNameWithoutExtension));
-            tooltip += $"\nRunning: {names}";
-        }
+        if (_lastRunningApps.Count > 0)
+            tooltip += $"\nRunning: {string.Join(", ", _lastRunningApps)}";
         _trayIcon.Text = tooltip.Length > 127 ? tooltip[..127] : tooltip;
 
-        var newIcon = IconRenderer.Create(state);
-        _trayIcon.Icon = newIcon;
-        _currentIcon?.Dispose();
-        _currentIcon = newIcon;
+        // Icons are cached per state — only touch the tray when the state changes.
+        if (state != _lastTrayState)
+        {
+            _trayIcon.Icon = IconRenderer.Get(state);
+            _lastTrayState = state;
+        }
     }
 
-    private void ShowBalloon(string message, ToolTipIcon icon = ToolTipIcon.Info)
+    private void ShowBalloon(string message, ToolTipIcon icon = ToolTipIcon.Info, bool isUpdate = false)
     {
         // Suppress duplicate notifications within cooldown window
         if (message == _lastBalloonMessage && DateTime.UtcNow - _lastBalloonTime < BalloonCooldown)
             return;
 
-        _lastBalloonMessage = message;
-        _lastBalloonTime    = DateTime.UtcNow;
+        _lastBalloonMessage  = message;
+        _lastBalloonTime     = DateTime.UtcNow;
+        _lastBalloonIsUpdate = isUpdate;   // only the update balloon is click-to-download
 
         _trayIcon.BalloonTipTitle = "WG-Autoconnect";
         _trayIcon.BalloonTipText  = message;
@@ -533,9 +853,9 @@ public sealed class AppContext : ApplicationContext
             _reloadDebounce?.Dispose();
             _pollTimer?.Dispose();
             _graceTimer?.Dispose();
-            _currentIcon?.Dispose();
             _trayIcon?.Dispose();
             _menu?.Dispose();
+            // Cached tray icons (IconRenderer) intentionally live until process exit.
         }
         base.Dispose(disposing);
     }

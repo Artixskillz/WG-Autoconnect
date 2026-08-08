@@ -6,6 +6,8 @@ static class Program
     // a local variable would be collected by the GC and release the OS handle.
     private static Mutex? _mutex;
 
+    private const string ShowSettingsEventName = @"Global\WgAutoconnect-ShowSettings";
+
     [STAThread]
     static void Main(string[] args)
     {
@@ -33,27 +35,68 @@ static class Program
         _mutex = new Mutex(true, "Global\\WgAutoconnect-SingleInstance", out bool isNew);
         if (!isNew)
         {
-            MessageBox.Show(
-                "WG-Autoconnect is already running.\n\nLook for it in your system tray.",
-                "WG-Autoconnect", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Another instance is running — ask it to open its Settings window
+            // instead of showing a dead-end message box.
+            try
+            {
+                using var evt = EventWaitHandle.OpenExisting(ShowSettingsEventName);
+                evt.Set();
+            }
+            catch
+            {
+                MessageBox.Show(
+                    "WG-Autoconnect is already running.\n\nLook for it in your system tray.",
+                    "WG-Autoconnect", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
             return;
         }
 
-        // Catch unhandled exceptions so the app doesn't silently die
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) =>
+        try
         {
-            Logger.Error($"Unhandled UI exception: {e.Exception}");
-        };
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            // Catch unhandled exceptions so the app doesn't silently die
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (_, e) =>
+            {
+                Logger.Error($"Unhandled UI exception: {e.Exception}");
+            };
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            {
+                if (e.ExceptionObject is Exception ex)
+                    Logger.Error($"Unhandled exception: {ex}");
+            };
+
+            ApplicationConfiguration.Initialize();
+
+            // Install the WinForms synchronization context BEFORE anything
+            // captures SynchronizationContext.Current — it is otherwise null
+            // until the first Control is constructed.
+            SynchronizationContext.SetSynchronizationContext(
+                new WindowsFormsSynchronizationContext());
+
+            // Signal handle the second-instance path uses to surface this instance
+            using var showSettingsSignal = new EventWaitHandle(
+                false, EventResetMode.AutoReset, ShowSettingsEventName);
+
+            // First-run setup happens HERE, before Application.Run — if the user
+            // cancels, we simply return. (Calling Application.Exit() from inside
+            // the AppContext constructor did nothing: no message loop was running
+            // yet, so Run() would start afterward and leave a headless ghost
+            // process holding the single-instance mutex.)
+            var settings   = SettingsService.Load();
+            bool isFirstRun = SettingsService.Validate(settings).Count > 0;
+            if (isFirstRun)
+            {
+                using var form = new SetupForm(settings);
+                if (form.ShowDialog() != DialogResult.OK)
+                    return;
+                settings = SettingsService.Load();
+            }
+
+            Application.Run(new AppContext(settings, isFirstRun, showSettingsSignal));
+        }
+        finally
         {
-            if (e.ExceptionObject is Exception ex)
-                Logger.Error($"Unhandled exception: {ex}");
-        };
-
-        ApplicationConfiguration.Initialize();
-        Application.Run(new AppContext());
-
-        _mutex.ReleaseMutex();
+            _mutex.ReleaseMutex();
+        }
     }
 }

@@ -90,13 +90,16 @@ public static class Theme
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
+            // Use live dimensions so the border tracks anchored resizes
+            int w = card.Width, h = card.Height;
+
             // Rounded clip region
             const int r = 6;
             using var path = new GraphicsPath();
             path.AddArc(0, 0, r, r, 180, 90);
-            path.AddArc(width - r - 1, 0, r, r, 270, 90);
-            path.AddArc(width - r - 1, height - r - 1, r, r, 0, 90);
-            path.AddArc(0, height - r - 1, r, r, 90, 90);
+            path.AddArc(w - r - 1, 0, r, r, 270, 90);
+            path.AddArc(w - r - 1, h - r - 1, r, r, 0, 90);
+            path.AddArc(0, h - r - 1, r, r, 90, 90);
             path.CloseFigure();
 
             // Subtle shadow/border
@@ -105,8 +108,9 @@ public static class Theme
 
             // Left accent stripe (clipped to rounded corner)
             using (var brush = new SolidBrush(Primary))
-                g.FillRectangle(brush, 0, r / 2, 4, card.Height - r);
+                g.FillRectangle(brush, 0, r / 2, 4, h - r);
         };
+        card.Resize += (_, _) => card.Invalidate();
 
         // Section title
         card.Controls.Add(new Label
@@ -120,6 +124,7 @@ public static class Theme
         {
             Left = 20, Top = 35, Width = width - 36, Height = 1,
             BackColor = Border,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         });
 
         return card;

@@ -6,6 +6,10 @@ public static class Logger
     private static readonly string OldLogPath = LogPath + ".old";
     private const long MaxLogSize = 524_288; // 512 KB
 
+    // Write can be called from any thread (unhandled-exception handlers,
+    // threadpool callbacks) — serialize access so crash diagnostics aren't lost.
+    private static readonly object Gate = new();
+
     public static void Info(string msg)  => Write("INFO ", msg);
     public static void Warn(string msg)  => Write("WARN ", msg);
     public static void Error(string msg) => Write("ERROR", msg);
@@ -14,13 +18,16 @@ public static class Logger
     {
         try
         {
-            Directory.CreateDirectory(SettingsService.DataDir);
-            if (File.Exists(LogPath) && new FileInfo(LogPath).Length > MaxLogSize)
+            lock (Gate)
             {
-                File.Move(LogPath, OldLogPath, overwrite: true);
-                File.AppendAllText(LogPath, "--- Log rotated ---\n");
+                Directory.CreateDirectory(SettingsService.DataDir);
+                if (File.Exists(LogPath) && new FileInfo(LogPath).Length > MaxLogSize)
+                {
+                    File.Move(LogPath, OldLogPath, overwrite: true);
+                    File.AppendAllText(LogPath, "--- Log rotated ---\n");
+                }
+                File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  [{level}]  {msg}\n");
             }
-            File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  [{level}]  {msg}\n");
         }
         catch { }
     }
