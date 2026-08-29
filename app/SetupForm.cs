@@ -1,7 +1,10 @@
-using System.Drawing.Drawing2D;
-
 namespace WgAutoconnect;
 
+/// <summary>
+/// Settings window. Layout is entirely TableLayoutPanel/Dock/AutoSize-driven —
+/// no absolute pixel positions — so it renders correctly at any display
+/// scaling (100–200%) and rescales live when dragged between monitors.
+/// </summary>
 public class SetupForm : Form
 {
     private readonly AppSettings _original;
@@ -14,16 +17,8 @@ public class SetupForm : Form
     private NumericUpDown _pollInterval     = null!;
     private NumericUpDown _gracePeriod      = null!;
     private CheckBox      _disconnectOnExit = null!;
-
-    // Live status
-    private Panel? _statusBar;
+    private StatusBanner? _statusBanner;
     private System.Windows.Forms.Timer? _statusTimer;
-    private bool   _liveVpnUp;
-    private string _liveStatusText = "";
-    private string _liveDetailText = "";
-
-    // Layout panels for resize support
-    private Panel _contentPanel = null!;
 
     public SetupForm(AppSettings settings, VpnService? vpn = null)
     {
@@ -48,8 +43,19 @@ public class SetupForm : Form
         base.OnFormClosed(e);
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyWindowTheme(this);
+    }
+
     private void BuildUI()
     {
+        // Layout MUST stay suspended until every control exists: assigning
+        // AutoScaleDimensions with live layout consumes the one-shot DPI scale
+        // on an empty form, and nothing added afterwards ever scales.
+        SuspendLayout();
+
         Text            = "WG-Autoconnect";
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox     = true;
@@ -57,289 +63,280 @@ public class SetupForm : Form
         StartPosition   = FormStartPosition.CenterScreen;
         BackColor       = Theme.Background;
         Font            = Theme.Base;
-        AutoScaleMode   = AutoScaleMode.Dpi;
-        DoubleBuffered  = true;
         Icon            = IconRenderer.CreateFormIcon();
-        MinimumSize     = new Size(480, 560);
-        ClientSize      = new Size(530, _vpn != null ? 680 : 630);
+        MinimumSize     = new Size(500, 480);
+        ClientSize      = new Size(560, _vpn != null ? 700 : 640);
 
-        // ── Header (fixed at top) ──────────────────────────────────
+        // ── Root: header / scrollable content / button bar ─────────
+        var root = new TableLayoutPanel
+        {
+            Dock        = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount    = 3,
+            BackColor   = Theme.Background,
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // header
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // content
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // buttons
+        Controls.Add(root);
+
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
         var verText = version != null ? $"v{version.Major}.{version.Minor}.{version.Build}" : "";
         var header  = Theme.CreateHeader("WG-Autoconnect", $"Configure your WireGuard VPN automation  {verText}");
-        header.Dock = DockStyle.Top;
-        Controls.Add(header);
+        header.Dock   = DockStyle.Fill;
+        header.Margin = Padding.Empty;
+        root.Controls.Add(header, 0, 0);
 
-        // ── Scrollable content area ────────────────────────────────
-        _contentPanel = new Panel
+        // ── Scrollable stack of cards ──────────────────────────────
+        var scroll = new Panel
         {
             Dock       = DockStyle.Fill,
             AutoScroll = true,
-            Padding    = new Padding(16, 8, 16, 8),
+            Padding    = new Padding(16, 12, 16, 0),
+            Margin     = Padding.Empty,
+            BackColor  = Theme.Background,
         };
-        Controls.Add(_contentPanel);
+        root.Controls.Add(scroll, 0, 1);
 
-        // Must add content AFTER header so Fill docks correctly
-        _contentPanel.BringToFront();
+        var stack = new TableLayoutPanel
+        {
+            Dock         = DockStyle.Top,
+            AutoSize     = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount  = 1,
+            BackColor    = Theme.Background,
+        };
+        stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        scroll.Controls.Add(stack);
 
-        int cx = 0;  // relative to content panel (padding handles margins)
-        int cw = _contentPanel.ClientSize.Width - 32;
-        int y  = 0;
-
-        // ── Live status bar (only when editing, not first run) ─────
+        // ── Live status banner (edit mode only) ────────────────────
         if (_vpn != null)
         {
-            _statusBar = new DoubleBufferedPanel
-            {
-                Left = cx, Top = y, Height = 52,
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            };
-            _statusBar.Width = cw;
-            _statusBar.Paint += PaintStatusBar;
-            _contentPanel.Controls.Add(_statusBar);
-            y += 60;
+            _statusBanner = new StatusBanner { Dock = DockStyle.Fill };
+            stack.Controls.Add(_statusBanner);
         }
 
-        // ══════════════════════════════════════════════════════════
-        // Card 1 — WireGuard Configuration
-        // ══════════════════════════════════════════════════════════
-        var card1 = Theme.CreateCard(cx, y, cw, 136, "WireGuard Configuration");
-        card1.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        {
-            int ix  = 20;
-            int iy  = 44;
-
-            card1.Controls.Add(SmallLabel("Config file (.conf)", ix, iy));
-            iy += 19;
-
-            _configCombo = new ComboBox
-            {
-                Left = ix, Top = iy,
-                DropDownStyle = ComboBoxStyle.DropDown,
-                FlatStyle     = FlatStyle.Flat,
-                BackColor     = Color.White,
-                Anchor        = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            };
-            _configCombo.Width = card1.Width - ix - 64;
-            foreach (var f in SettingsService.FindConfFiles()) _configCombo.Items.Add(f);
-            card1.Controls.Add(_configCombo);
-
-            var btnConf = Theme.SecondaryBtn("\u2026", 0, iy, 36, 24);
-            btnConf.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            btnConf.Left   = card1.Width - 56;
-            btnConf.Click += (_, _) => BrowseFor(_configCombo, "WireGuard Config|*.conf|All Files|*.*");
-            card1.Controls.Add(btnConf);
-            iy += 30;
-
-            card1.Controls.Add(SmallLabel("Executable", ix, iy));
-            iy += 19;
-
-            _exePath = new TextBox
-            {
-                Left = ix, Top = iy,
-                BorderStyle = BorderStyle.FixedSingle,
-                Anchor      = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            };
-            _exePath.Width = card1.Width - ix - 64;
-            card1.Controls.Add(_exePath);
-
-            var btnExe = Theme.SecondaryBtn("\u2026", 0, iy, 36, 24);
-            btnExe.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            btnExe.Left   = card1.Width - 56;
-            btnExe.Click += (_, _) => BrowseFor(_exePath, "Executables|wireguard.exe;*.exe|All Files|*.*");
-            card1.Controls.Add(btnExe);
-        }
-        _contentPanel.Controls.Add(card1);
-        y += card1.Height + 10;
-
-        // ══════════════════════════════════════════════════════════
-        // Card 2 — Monitored Applications
-        // ══════════════════════════════════════════════════════════
-        var card2 = Theme.CreateCard(cx, y, cw, 194, "Monitored Applications");
-        card2.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        {
-            int ix = 20;
-            int iy = 42;
-
-            card2.Controls.Add(new Label
-            {
-                Text = "VPN connects when any of these processes are running:",
-                Left = ix, Top = iy, Height = 18, AutoSize = false,
-                ForeColor = Theme.TextSecondary,
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-                Width  = card2.Width - ix * 2,
-            });
-            iy += 22;
-
-            _appsList = new ListBox
-            {
-                Left         = ix,
-                Top          = iy,
-                Height       = 90,
-                BorderStyle  = BorderStyle.FixedSingle,
-                DrawMode     = DrawMode.OwnerDrawFixed,
-                ItemHeight   = 24,
-                Anchor       = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            };
-            _appsList.Width = card2.Width - ix * 2;
-            _appsList.DrawItem += DrawAppItem;
-            card2.Controls.Add(_appsList);
-            iy += 96;
-
-            _appEntry = new TextBox
-            {
-                Left = ix, Top = iy, Width = 200,
-                BorderStyle     = BorderStyle.FixedSingle,
-                PlaceholderText = "e.g. slack.exe",
-            };
-            _appEntry.KeyDown += (_, e) =>
-            {
-                if (e.KeyCode == Keys.Enter) { AddApp(); e.SuppressKeyPress = true; }
-            };
-            card2.Controls.Add(_appEntry);
-
-            var btnAdd    = Theme.SecondaryBtn("Add",       ix + 206, iy - 1, 58, 26);
-            var btnPick   = Theme.SecondaryBtn("Pick\u2026", ix + 268, iy - 1, 72, 26);
-            var btnRemove = Theme.SecondaryBtn("Remove",    ix + 344, iy - 1, 72, 26);
-
-            btnAdd.Click    += (_, _) => AddApp();
-            btnPick.Click   += (_, _) => PickFromRunning();
-            btnRemove.Click += (_, _) =>
-            {
-                if (_appsList.SelectedIndex >= 0) _appsList.Items.RemoveAt(_appsList.SelectedIndex);
-            };
-
-            btnPick.ForeColor = Theme.Primary;
-            btnPick.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-
-            card2.Controls.Add(btnAdd);
-            card2.Controls.Add(btnPick);
-            card2.Controls.Add(btnRemove);
-        }
-        _contentPanel.Controls.Add(card2);
-        y += card2.Height + 10;
-
-        // ══════════════════════════════════════════════════════════
-        // Card 3 — Options
-        // ══════════════════════════════════════════════════════════
-        var card3 = Theme.CreateCard(cx, y, cw, 130, "Options");
-        card3.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        {
-            int ix = 20;
-            int iy = 46;
-
-            card3.Controls.Add(new Label { Text = "Poll interval", Left = ix, Top = iy + 3, Width = 100, Height = 20, ForeColor = Theme.TextPrimary });
-            _pollInterval = new NumericUpDown
-            {
-                Left = ix + 108, Top = iy, Width = 80,
-                Minimum = 1000, Maximum = 60000, Increment = 1000,
-                BorderStyle = BorderStyle.FixedSingle,
-            };
-            card3.Controls.Add(_pollInterval);
-            card3.Controls.Add(new Label { Text = "ms", Left = ix + 194, Top = iy + 3, Width = 40, Height = 20, ForeColor = Theme.TextSecondary });
-            iy += 30;
-
-            card3.Controls.Add(new Label { Text = "Grace period", Left = ix, Top = iy + 3, Width = 100, Height = 20, ForeColor = Theme.TextPrimary });
-            _gracePeriod = new NumericUpDown
-            {
-                Left = ix + 108, Top = iy, Width = 80,
-                Minimum = 0, Maximum = 300, Increment = 5,
-                BorderStyle = BorderStyle.FixedSingle,
-            };
-            card3.Controls.Add(_gracePeriod);
-            card3.Controls.Add(new Label { Text = "seconds", Left = ix + 194, Top = iy + 3, Width = 60, Height = 20, ForeColor = Theme.TextSecondary });
-            iy += 32;
-
-            _disconnectOnExit = new CheckBox
-            {
-                Text = "Disconnect VPN when this app exits",
-                Left = ix, Top = iy, Width = 300, Height = 22,
-                ForeColor = Theme.TextPrimary,
-                FlatStyle = FlatStyle.Flat,
-            };
-            card3.Controls.Add(_disconnectOnExit);
-        }
-        _contentPanel.Controls.Add(card3);
-        y += card3.Height + 16;
+        stack.Controls.Add(BuildTunnelCard());
+        stack.Controls.Add(BuildAppsCard());
+        stack.Controls.Add(BuildOptionsCard());
 
         // ── Bottom buttons ─────────────────────────────────────────
-        var btnPanel = new Panel
+        var buttons = new FlowLayoutPanel
         {
-            Left   = cx,
-            Top    = y,
-            Height = 40,
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Dock          = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize      = true,
+            AutoSizeMode  = AutoSizeMode.GrowAndShrink,
+            Padding       = new Padding(12, 6, 12, 10),
+            BackColor     = Theme.Background,
+            Margin        = Padding.Empty,
         };
-        btnPanel.Width = cw;
-
-        var btnCancel = Theme.SecondaryBtn("Cancel", 0, 0, 86, 36);
-        btnCancel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnCancel.Left   = btnPanel.Width - 184;
-
-        var btnSave = Theme.PrimaryBtn("Save", 0, 0, 92, 36);
-        btnSave.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnSave.Left   = btnPanel.Width - 92;
-
+        var btnSave   = Theme.PrimaryBtn("Save");
+        var btnCancel = Theme.SecondaryBtn("Cancel");
+        btnSave.Margin   = new Padding(6, 0, 0, 0);
+        btnCancel.Margin = new Padding(6, 2, 0, 0);
         btnSave.Click   += OnSave;
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
-
-        btnPanel.Controls.Add(btnSave);
-        btnPanel.Controls.Add(btnCancel);
-        _contentPanel.Controls.Add(btnPanel);
+        buttons.Controls.Add(btnSave);     // rightmost
+        buttons.Controls.Add(btnCancel);
+        root.Controls.Add(buttons, 0, 2);
 
         AcceptButton = btnSave;
         CancelButton = btnCancel;
+
+        // Designer pattern: scale dims set with the FULL tree present, then
+        // resume — the deferred auto-scale pass now scales everything at once.
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode       = AutoScaleMode.Dpi;
+        ResumeLayout(false);
+        PerformLayout();
     }
 
-    // ── Live status bar painting ─────────────────────────────────
+    // ── Card 1: tunnel + executable ──────────────────────────────
 
-    private void PaintStatusBar(object? sender, PaintEventArgs e)
+    private Card BuildTunnelCard()
     {
-        var g    = e.Graphics;
-        var rect = _statusBar!.ClientRectangle;
+        var card = new Card("WireGuard Configuration") { Dock = DockStyle.Fill };
 
-        // Background tint based on VPN state
-        var bgColor = _liveVpnUp
-            ? Color.FromArgb(232, 245, 233)   // light green
-            : Color.FromArgb(250, 250, 250);  // light gray
-        using (var bg = new SolidBrush(bgColor))
-            g.FillRectangle(bg, rect);
+        card.Body.Controls.Add(SmallLabel("Tunnel  —  pick one imported in WireGuard, or browse to a .conf file"));
 
-        // Bottom border
-        using (var pen = new Pen(Theme.Border))
-            g.DrawLine(pen, 0, rect.Height - 1, rect.Width, rect.Height - 1);
-
-        // Status indicator dot
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var dotColor = _liveVpnUp
-            ? Color.FromArgb(46, 125, 50)     // green
-            : Color.FromArgb(158, 158, 158);  // gray
-        using (var dotBrush = new SolidBrush(dotColor))
-            g.FillEllipse(dotBrush, 20, 16, 16, 16);
-
-        // Outer ring glow when connected
-        if (_liveVpnUp)
+        var configRow = TwoColRow();
+        _configCombo = new ComboBox
         {
-            using var glowPen = new Pen(Color.FromArgb(60, 46, 125, 50), 2);
-            g.DrawEllipse(glowPen, 18, 14, 20, 20);
-        }
+            Dock          = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            FlatStyle     = FlatStyle.Flat,
+            BackColor     = Theme.InputBg,
+            ForeColor     = Theme.TextPrimary,
+            Margin        = new Padding(0, 2, 6, 2),
+        };
+        foreach (var choice in SettingsService.FindTunnelChoices(_original.WireGuardExePath))
+            _configCombo.Items.Add(choice);
+        var btnConf = Theme.SecondaryBtn("Browse…");
+        btnConf.Click += (_, _) => BrowseConfig();
+        configRow.Controls.Add(_configCombo, 0, 0);
+        configRow.Controls.Add(btnConf, 1, 0);
+        card.Body.Controls.Add(configRow);
 
-        // Status text
-        TextRenderer.DrawText(g, _liveStatusText, Theme.Section,
-            new Point(44, 6), Theme.TextPrimary);
+        card.Body.Controls.Add(SmallLabel("WireGuard executable"));
 
-        TextRenderer.DrawText(g, _liveDetailText, Theme.Base,
-            new Point(44, 28), Theme.TextSecondary);
+        var exeRow = TwoColRow();
+        _exePath = new TextBox
+        {
+            Dock        = DockStyle.Fill,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor   = Theme.InputBg,
+            ForeColor   = Theme.TextPrimary,
+            Margin      = new Padding(0, 2, 6, 2),
+        };
+        var btnExe = Theme.SecondaryBtn("Browse…");
+        btnExe.Click += (_, _) => BrowseFor(_exePath, "Executables|wireguard.exe;*.exe|All Files|*.*");
+        exeRow.Controls.Add(_exePath, 0, 0);
+        exeRow.Controls.Add(btnExe, 1, 0);
+        card.Body.Controls.Add(exeRow);
+
+        return card;
     }
+
+    // ── Card 2: monitored apps ───────────────────────────────────
+
+    private Card BuildAppsCard()
+    {
+        var card = new Card("Monitored Applications") { Dock = DockStyle.Fill };
+
+        card.Body.Controls.Add(SmallLabel("VPN connects when any of these processes are running:"));
+
+        _appsList = new ListBox
+        {
+            Dock        = DockStyle.Fill,
+            Height      = 104,
+            BorderStyle = BorderStyle.FixedSingle,
+            DrawMode    = DrawMode.OwnerDrawFixed,
+            BackColor   = Theme.InputBg,
+            ForeColor   = Theme.TextPrimary,
+            Margin      = new Padding(0, 2, 0, 6),
+        };
+        void ScaleItems() => _appsList.ItemHeight = _appsList.LogicalToDeviceUnits(24);
+        _appsList.HandleCreated         += (_, _) => ScaleItems();
+        _appsList.DpiChangedAfterParent += (_, _) => ScaleItems();
+        _appsList.DrawItem += DrawAppItem;
+        card.Body.Controls.Add(_appsList);
+
+        var entryRow = new TableLayoutPanel
+        {
+            Dock         = DockStyle.Fill,
+            AutoSize     = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount  = 4,
+            Margin       = Padding.Empty,
+        };
+        entryRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        entryRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        entryRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        entryRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        _appEntry = new TextBox
+        {
+            Dock            = DockStyle.Fill,
+            BorderStyle     = BorderStyle.FixedSingle,
+            PlaceholderText = "e.g. slack.exe",
+            BackColor       = Theme.InputBg,
+            ForeColor       = Theme.TextPrimary,
+            Margin          = new Padding(0, 4, 6, 2),
+        };
+        _appEntry.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter) { AddApp(); e.SuppressKeyPress = true; }
+        };
+
+        var btnAdd    = Theme.SecondaryBtn("Add");
+        var btnPick   = Theme.SecondaryBtn("Pick…");
+        var btnRemove = Theme.SecondaryBtn("Remove");
+        btnPick.ForeColor = Theme.Primary;
+        btnPick.Font      = Theme.BtnFont;
+        foreach (var b in new[] { btnAdd, btnPick, btnRemove })
+            b.Margin = new Padding(0, 2, 4, 0);
+
+        btnAdd.Click    += (_, _) => AddApp();
+        btnPick.Click   += (_, _) => PickFromRunning();
+        btnRemove.Click += (_, _) =>
+        {
+            if (_appsList.SelectedIndex >= 0) _appsList.Items.RemoveAt(_appsList.SelectedIndex);
+        };
+
+        entryRow.Controls.Add(_appEntry, 0, 0);
+        entryRow.Controls.Add(btnAdd, 1, 0);
+        entryRow.Controls.Add(btnPick, 2, 0);
+        entryRow.Controls.Add(btnRemove, 3, 0);
+        card.Body.Controls.Add(entryRow);
+
+        return card;
+    }
+
+    // ── Card 3: options ──────────────────────────────────────────
+
+    private Card BuildOptionsCard()
+    {
+        var card = new Card("Options") { Dock = DockStyle.Fill };
+
+        var grid = new TableLayoutPanel
+        {
+            Dock         = DockStyle.Fill,
+            AutoSize     = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount  = 3,
+            Margin       = Padding.Empty,
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        _pollInterval = new NumericUpDown
+        {
+            Width = 80, Minimum = 1000, Maximum = 60000, Increment = 1000,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Theme.InputBg, ForeColor = Theme.TextPrimary,
+            Margin = new Padding(8, 2, 0, 2),
+        };
+        _gracePeriod = new NumericUpDown
+        {
+            Width = 80, Minimum = 0, Maximum = 300, Increment = 5,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Theme.InputBg, ForeColor = Theme.TextPrimary,
+            Margin = new Padding(8, 2, 0, 2),
+        };
+
+        grid.Controls.Add(GridLabel("Poll interval"), 0, 0);
+        grid.Controls.Add(_pollInterval, 1, 0);
+        grid.Controls.Add(GridLabel("ms", secondary: true), 2, 0);
+
+        grid.Controls.Add(GridLabel("Grace period"), 0, 1);
+        grid.Controls.Add(_gracePeriod, 1, 1);
+        grid.Controls.Add(GridLabel("seconds", secondary: true), 2, 1);
+
+        _disconnectOnExit = new CheckBox
+        {
+            Text      = "Disconnect VPN when this app exits",
+            AutoSize  = true,
+            ForeColor = Theme.TextPrimary,
+            FlatStyle = FlatStyle.Flat,
+            Margin    = new Padding(0, 8, 0, 0),
+        };
+        grid.Controls.Add(_disconnectOnExit, 0, 2);
+        grid.SetColumnSpan(_disconnectOnExit, 3);
+
+        card.Body.Controls.Add(grid);
+        return card;
+    }
+
+    // ── Live status ──────────────────────────────────────────────
 
     private void UpdateLiveStatus()
     {
-        if (_vpn == null || _statusBar == null) return;
+        if (_vpn == null || _statusBanner == null) return;
 
-        _liveVpnUp = _vpn.IsConnected();
-        _liveStatusText = _liveVpnUp
-            ? $"Connected to {_original.TunnelName}"
-            : "Disconnected";
+        bool up = _vpn.IsConnected();
 
         // Reflect the app list as currently edited in the form (not the saved
         // settings), using a single process snapshot with disposed handles.
@@ -360,14 +357,12 @@ public class SetupForm : Form
             foreach (var p in procs) p.Dispose();
         }
 
-        _liveDetailText = running.Count > 0
-            ? $"Running: {string.Join(", ", running)}"
-            : "No monitored apps running";
-
-        _statusBar.Invalidate();
+        _statusBanner.SetState(up,
+            up ? $"Connected to {_original.TunnelName}" : "Disconnected",
+            running.Count > 0 ? $"Running: {string.Join(", ", running)}" : "No monitored apps running");
     }
 
-    // ── Custom-drawn ListBox items ───────────────────────────────
+    // ── Custom-drawn ListBox items (theme + DPI aware) ───────────
 
     private void DrawAppItem(object? sender, DrawItemEventArgs e)
     {
@@ -375,12 +370,13 @@ public class SetupForm : Form
         var text       = _appsList.Items[e.Index].ToString()!;
         var isSelected = (e.State & DrawItemState.Selected) != 0;
 
-        using (var bg = new SolidBrush(isSelected ? Theme.Primary : Theme.Card))
+        using (var bg = new SolidBrush(isSelected ? Theme.Primary : Theme.InputBg))
             e.Graphics.FillRectangle(bg, e.Bounds);
 
         using (var fg = new SolidBrush(isSelected ? Color.White : Theme.TextPrimary))
             e.Graphics.DrawString(text, e.Font ?? Theme.Base, fg,
-                e.Bounds.Left + 12, e.Bounds.Top + 4);
+                e.Bounds.Left + _appsList.LogicalToDeviceUnits(12),
+                e.Bounds.Top + _appsList.LogicalToDeviceUnits(4));
 
         if ((e.State & DrawItemState.Focus) != 0 && !isSelected)
             ControlPaint.DrawFocusRectangle(e.Graphics, e.Bounds);
@@ -393,7 +389,9 @@ public class SetupForm : Form
         var app = _appEntry.Text.Trim();
         if (string.IsNullOrEmpty(app)) return;
         if (!app.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) app += ".exe";
-        if (!_appsList.Items.Contains(app)) _appsList.Items.Add(app);
+        if (!_appsList.Items.Cast<string>().Any(
+                a => a.Equals(app, StringComparison.OrdinalIgnoreCase)))
+            _appsList.Items.Add(app);
         _appEntry.Clear();
     }
 
@@ -408,7 +406,6 @@ public class SetupForm : Form
         // everything to "name.exe".
         static string Stem(string a) => Path.GetFileNameWithoutExtension(a);
 
-        // Remove monitored apps the user explicitly unchecked in the picker
         foreach (var app in picker.UncheckedApps)
         {
             var idx = _appsList.Items.Cast<string>().ToList()
@@ -426,7 +423,7 @@ public class SetupForm : Form
     {
         var draft = new AppSettings
         {
-            WireGuardConfigPath = _configCombo.Text.Trim(),
+            WireGuardConfigPath = SelectedConfigPath(),
             WireGuardExePath    = _exePath.Text.Trim(),
             MonitoredApps       = _appsList.Items.Cast<string>().ToList(),
         };
@@ -447,10 +444,23 @@ public class SetupForm : Form
         DialogResult = DialogResult.OK;
     }
 
+    /// <summary>The tunnel path to save: a picked TunnelChoice's path, or the raw typed text.</summary>
+    private string SelectedConfigPath()
+    {
+        if (_configCombo.SelectedItem is TunnelChoice tc && _configCombo.Text == tc.Display)
+            return tc.Path;
+        return _configCombo.Text.Trim();
+    }
+
     private void PopulateFields()
     {
         if (!string.IsNullOrEmpty(_original.WireGuardConfigPath))
-            _configCombo.Text = _original.WireGuardConfigPath;
+        {
+            var match = _configCombo.Items.Cast<TunnelChoice>()
+                .FirstOrDefault(c => c.Path.Equals(_original.WireGuardConfigPath, StringComparison.OrdinalIgnoreCase));
+            if (match != null) _configCombo.SelectedItem = match;
+            else _configCombo.Text = _original.WireGuardConfigPath;
+        }
         else if (_configCombo.Items.Count > 0)
             _configCombo.SelectedIndex = 0;
 
@@ -467,23 +477,53 @@ public class SetupForm : Form
 
     // ── Helpers ──────────────────────────────────────────────────
 
-    private static Label SmallLabel(string text, int left, int top) =>
-        new() { Text = text, Left = left, Top = top, AutoSize = true, ForeColor = Theme.TextSecondary };
-
-    private static void BrowseFor(Control target, string filter)
+    private static Label SmallLabel(string text) => new()
     {
-        using var dlg = new OpenFileDialog { Filter = filter };
-        var current = target is ComboBox cb ? cb.Text : ((TextBox)target).Text;
+        Text = text, AutoSize = true, ForeColor = Theme.TextSecondary,
+        Margin = new Padding(0, 6, 0, 2),
+    };
+
+    private static Label GridLabel(string text, bool secondary = false) => new()
+    {
+        Text = text, AutoSize = true,
+        ForeColor = secondary ? Theme.TextSecondary : Theme.TextPrimary,
+        Margin = new Padding(0, 6, 0, 0), Anchor = AnchorStyles.Left,
+    };
+
+    private static TableLayoutPanel TwoColRow()
+    {
+        var row = new TableLayoutPanel
+        {
+            Dock         = DockStyle.Fill,
+            AutoSize     = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount  = 2,
+            Margin       = Padding.Empty,
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        return row;
+    }
+
+    private void BrowseConfig()
+    {
+        using var dlg = new OpenFileDialog
+        {
+            Filter = "WireGuard Config|*.conf;*.conf.dpapi|All Files|*.*",
+        };
+        var current = SelectedConfigPath();
         if (!string.IsNullOrEmpty(current))
             try { dlg.InitialDirectory = Path.GetDirectoryName(current) ?? ""; } catch { }
         if (dlg.ShowDialog() != DialogResult.OK) return;
-        if (target is ComboBox c) c.Text = dlg.FileName;
-        else ((TextBox)target).Text = dlg.FileName;
+        _configCombo.Text = dlg.FileName;
     }
-}
 
-/// <summary>Panel with double buffering enabled to prevent flicker during custom painting.</summary>
-internal sealed class DoubleBufferedPanel : Panel
-{
-    public DoubleBufferedPanel() => DoubleBuffered = true;
+    private static void BrowseFor(TextBox target, string filter)
+    {
+        using var dlg = new OpenFileDialog { Filter = filter };
+        if (!string.IsNullOrEmpty(target.Text))
+            try { dlg.InitialDirectory = Path.GetDirectoryName(target.Text) ?? ""; } catch { }
+        if (dlg.ShowDialog() != DialogResult.OK) return;
+        target.Text = dlg.FileName;
+    }
 }

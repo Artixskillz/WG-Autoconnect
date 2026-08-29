@@ -1,5 +1,9 @@
 namespace WgAutoconnect;
 
+/// <summary>
+/// Running-process picker. Layout is container-driven (no absolute positions)
+/// so it scales correctly at any DPI, and it follows the light/dark theme.
+/// </summary>
 public class ProcessPickerForm : Form
 {
     private readonly CheckedListBox _processList;
@@ -66,84 +70,114 @@ public class ProcessPickerForm : Form
             .OrderBy(t => t.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // ── Form ─────────────────────────────────────────────────
-        Text            = "WG-Autoconnect";
-        FormBorderStyle = FormBorderStyle.Sizable;
-        MaximizeBox     = true;
-        MinimizeBox     = false;
-        StartPosition   = FormStartPosition.CenterParent;
-        ClientSize      = new Size(400, 560);
-        MinimumSize     = new Size(360, 420);
-        BackColor       = Theme.Background;
-        Font            = Theme.Base;
-        AutoScaleMode   = AutoScaleMode.Dpi;
-        DoubleBuffered  = true;
-        Icon            = IconRenderer.CreateFormIcon();
-
-        Controls.Add(Theme.CreateHeader("Select Applications", "Choose running processes to monitor"));
-
-        // ── Content card ─────────────────────────────────────────
-        var card = Theme.CreateCard(16, 90, ClientSize.Width - 32, ClientSize.Height - 90 - 54, "Running Processes");
-        card.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
-
-        card.Controls.Add(new Label
-        {
-            Text = "Filter:", Left = 20, Top = 44, Width = 42, Height = 18,
-            ForeColor = Theme.TextSecondary,
-        });
-
-        _filter = new TextBox
-        {
-            Left = 64, Top = 42, Width = card.Width - 64 - 20,
-            BorderStyle     = BorderStyle.FixedSingle,
-            PlaceholderText = "Type to filter…",
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-        };
-        _filter.TextChanged += (_, _) => ApplyFilter();
-        card.Controls.Add(_filter);
-
-        _showBackground = new CheckBox
-        {
-            Text = "Show background processes",
-            Left = 20, Top = 68, Width = card.Width - 40, Height = 20,
-            ForeColor = Theme.TextSecondary,
-            FlatStyle = FlatStyle.Flat,
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-        };
-        _showBackground.CheckedChanged += (_, _) => ApplyFilter();
-        card.Controls.Add(_showBackground);
-
-        _processList = new CheckedListBox
-        {
-            Left         = 20,
-            Top          = 94,
-            Width        = card.Width - 40,
-            Height       = card.Height - 94 - 12,
-            CheckOnClick = true,
-            BorderStyle  = BorderStyle.FixedSingle,
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
-        };
-        card.Controls.Add(_processList);
-
         foreach (var name in already)
         {
             _preChecked.Add(name + ".exe");
             _checked.Add(name + ".exe");
         }
+
+        // ── Form ─────────────────────────────────────────────────
+        // Suspend layout for the whole build — see SetupForm.BuildUI: the
+        // one-shot DPI scale must not fire before the control tree exists.
+        SuspendLayout();
+
+        Text            = "WG-Autoconnect";
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox     = true;
+        MinimizeBox     = false;
+        StartPosition   = FormStartPosition.CenterParent;
+        BackColor       = Theme.Background;
+        Font            = Theme.Base;
+        ClientSize      = new Size(420, 560);
+        MinimumSize     = new Size(360, 420);
+        Icon            = IconRenderer.CreateFormIcon();
+
+        var root = new TableLayoutPanel
+        {
+            Dock        = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount    = 3,
+            BackColor   = Theme.Background,
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // header
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // content
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // buttons
+        Controls.Add(root);
+
+        var header = Theme.CreateHeader("Select Applications", "Choose running processes to monitor");
+        header.Dock   = DockStyle.Fill;
+        header.Margin = Padding.Empty;
+        root.Controls.Add(header, 0, 0);
+
+        // ── Content: filter row, background toggle, list ─────────
+        var content = new TableLayoutPanel
+        {
+            Dock        = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount    = 3,
+            Padding     = new Padding(16, 10, 16, 4),
+            BackColor   = Theme.Background,
+            Margin      = Padding.Empty,
+        };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // filter
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // toggle
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // list
+        root.Controls.Add(content, 0, 1);
+
+        _filter = new TextBox
+        {
+            Dock            = DockStyle.Fill,
+            BorderStyle     = BorderStyle.FixedSingle,
+            PlaceholderText = "Type to filter…",
+            BackColor       = Theme.InputBg,
+            ForeColor       = Theme.TextPrimary,
+            Margin          = new Padding(0, 0, 0, 4),
+        };
+        _filter.TextChanged += (_, _) => ApplyFilter();
+        content.Controls.Add(_filter, 0, 0);
+
+        _showBackground = new CheckBox
+        {
+            Text      = "Show background processes",
+            AutoSize  = true,
+            ForeColor = Theme.TextSecondary,
+            FlatStyle = FlatStyle.Flat,
+            Margin    = new Padding(0, 0, 0, 4),
+        };
+        _showBackground.CheckedChanged += (_, _) => ApplyFilter();
+        content.Controls.Add(_showBackground, 0, 1);
+
+        _processList = new CheckedListBox
+        {
+            Dock         = DockStyle.Fill,
+            CheckOnClick = true,
+            BorderStyle  = BorderStyle.FixedSingle,
+            BackColor    = Theme.InputBg,
+            ForeColor    = Theme.TextPrimary,
+            Margin       = Padding.Empty,
+        };
+        content.Controls.Add(_processList, 0, 2);
+
         _processList.ItemCheck += OnItemCheck;
         ApplyFilter();
 
-        Controls.Add(card);
-
         // ── Buttons ──────────────────────────────────────────────
-        var btnCancel = Theme.SecondaryBtn("Cancel", 0, 0, 86, 34);
-        var btnOk     = Theme.PrimaryBtn("Apply", 0, 0, 96, 34);
-        btnCancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
-        btnOk.Anchor     = AnchorStyles.Bottom | AnchorStyles.Right;
-        btnCancel.Left   = ClientSize.Width - 16 - 96 - 6 - 86;
-        btnOk.Left       = ClientSize.Width - 16 - 96;
-        btnCancel.Top    = ClientSize.Height - 44;
-        btnOk.Top        = ClientSize.Height - 44;
+        var buttons = new FlowLayoutPanel
+        {
+            Dock          = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize      = true,
+            AutoSizeMode  = AutoSizeMode.GrowAndShrink,
+            Padding       = new Padding(12, 6, 12, 10),
+            BackColor     = Theme.Background,
+            Margin        = Padding.Empty,
+        };
+        var btnOk     = Theme.PrimaryBtn("Apply");
+        var btnCancel = Theme.SecondaryBtn("Cancel");
+        btnOk.Margin     = new Padding(6, 0, 0, 0);
+        btnCancel.Margin = new Padding(6, 2, 0, 0);
 
         btnOk.Click += (_, _) =>
         {
@@ -153,10 +187,23 @@ public class ProcessPickerForm : Form
             DialogResult = DialogResult.OK;
         };
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
-        Controls.Add(btnOk);
-        Controls.Add(btnCancel);
+        buttons.Controls.Add(btnOk);
+        buttons.Controls.Add(btnCancel);
+        root.Controls.Add(buttons, 0, 2);
+
         AcceptButton = btnOk;
         CancelButton = btnCancel;
+
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode       = AutoScaleMode.Dpi;
+        ResumeLayout(false);
+        PerformLayout();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyWindowTheme(this);
     }
 
     private void OnItemCheck(object? sender, ItemCheckEventArgs e)

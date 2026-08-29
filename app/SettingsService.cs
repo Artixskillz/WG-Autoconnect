@@ -2,6 +2,12 @@ using System.Text.Json;
 
 namespace WgAutoconnect;
 
+/// <summary>A selectable tunnel source: display label + the path wireguard.exe consumes.</summary>
+public sealed record TunnelChoice(string Display, string Path)
+{
+    public override string ToString() => Display;
+}
+
 public static class SettingsService
 {
     public static readonly string DataDir = Path.Combine(
@@ -102,5 +108,50 @@ public static class SettingsService
             catch { }
         }
         return files.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Tunnels imported into the WireGuard app itself. WireGuard stores them
+    /// as encrypted .conf.dpapi files that wireguard.exe accepts directly for
+    /// /installtunnelservice — so users who imported their config into the
+    /// WireGuard GUI don't need to keep a loose .conf around.
+    /// </summary>
+    public static List<TunnelChoice> FindTunnelChoices(string wireGuardExePath)
+    {
+        var choices = new List<TunnelChoice>();
+
+        try
+        {
+            var wgDir = Path.GetDirectoryName(wireGuardExePath);
+            if (!string.IsNullOrEmpty(wgDir))
+            {
+                var confDir = Path.Combine(wgDir, "Data", "Configurations");
+                if (Directory.Exists(confDir))
+                {
+                    foreach (var f in Directory.GetFiles(confDir, "*.conf*", SearchOption.TopDirectoryOnly))
+                    {
+                        if (!f.EndsWith(".conf",       StringComparison.OrdinalIgnoreCase) &&
+                            !f.EndsWith(".conf.dpapi", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        choices.Add(new TunnelChoice(
+                            $"{TunnelNameOf(f)}  (imported in WireGuard)", f));
+                    }
+                }
+            }
+        }
+        catch { }
+
+        foreach (var f in FindConfFiles())
+            choices.Add(new TunnelChoice(f, f));
+
+        return choices;
+    }
+
+    private static string TunnelNameOf(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (name.EndsWith(".dpapi", StringComparison.OrdinalIgnoreCase)) name = name[..^6];
+        if (name.EndsWith(".conf",  StringComparison.OrdinalIgnoreCase)) name = name[..^5];
+        return name;
     }
 }

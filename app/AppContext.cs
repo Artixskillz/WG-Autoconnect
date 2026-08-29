@@ -35,7 +35,10 @@ public sealed class AppContext : ApplicationContext
     private bool _shuttingDown;
     private List<string> _lastRunningApps = [];
     private TrayState? _lastTrayState;
-    private string? _updateUrl;
+    private string? _updateUrl;          // release page (browser fallback)
+    private string? _updateSetupUrl;     // direct installer download (in-app update)
+    private string? _updateTag;
+    private bool _updateInProgress;
     private bool _lastBalloonIsUpdate;
     private AppSettings? _pendingSettings;   // settings change that arrived mid-transition
 
@@ -98,6 +101,7 @@ public sealed class AppContext : ApplicationContext
         _menu.Items.Add(new ToolStripMenuItem("Settings", null, (_, _) => OpenSettings()));
         _menu.Items.Add(new ToolStripMenuItem("View Log",  null, OnViewLog));
         _menu.Items.Add(new ToolStripMenuItem("Open Data Folder", null, OnOpenDataFolder));
+        _menu.Items.Add(new ToolStripMenuItem("Copy Diagnostics", null, OnCopyDiagnostics));
         _menu.Items.Add(new ToolStripMenuItem("Check for Updates", null, OnCheckForUpdates));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Uninstall", null, OnUninstall));
@@ -130,6 +134,17 @@ public sealed class AppContext : ApplicationContext
         // dead-end message box — surface our Settings window when it fires.
         StartShowSettingsListener(showSettingsSignal);
 
+        // Heal a startup task that points at a stale exe path (old portable
+        // copy after switching to the installer, or a moved exe).
+        StartupService.HealRegistration();
+
+        // Toast notifications (update toast has an "Install now" button).
+        // Purge toasts left by a previous session — they'd be dead buttons.
+        Notifier.Initialize();
+        Notifier.ClearHistory();
+        Notifier.UpdateInstallRequested += () =>
+            _syncContext.Post(_ => BeginUpdateInstall(), null);
+
         Logger.Info($"Started | Tunnel: {_settings.TunnelName} | Watching: {string.Join(", ", _settings.MonitoredApps)}");
         CheckAndToggle();
         _pollTimer.Start();
@@ -149,13 +164,18 @@ public sealed class AppContext : ApplicationContext
         }
 
         // Check for updates (non-blocking)
-        _ = UpdateChecker.CheckForUpdateAsync((tag, url) =>
-            _syncContext.Post(_ =>
-            {
-                _updateUrl = string.IsNullOrEmpty(url) ? ReleasesFallbackUrl : url;
-                Logger.Info($"Update available: {tag}");
-                ShowBalloon($"Update {tag} available — click this notification to download.", ToolTipIcon.Info, isUpdate: true);
-            }, null));
+        _ = UpdateChecker.CheckForUpdateAsync((tag, url, setupUrl) =>
+            _syncContext.Post(_ => AnnounceUpdate(tag, url, setupUrl), null));
+    }
+
+    private void AnnounceUpdate(string tag, string url, string? setupUrl)
+    {
+        _updateTag      = tag;
+        _updateUrl      = string.IsNullOrEmpty(url) ? ReleasesFallbackUrl : url;
+        _updateSetupUrl = setupUrl;
+        Logger.Info($"Update available: {tag}");
+        if (!Notifier.ShowUpdateToast(tag))
+            ShowBalloon($"Update {tag} available — click this notification to install.", ToolTipIcon.Info, isUpdate: true);
     }
 
     // -------------------------------------------------------------------------
@@ -625,6 +645,11 @@ public sealed class AppContext : ApplicationContext
     {
         if (_shuttingDown) return;   // no modal dialogs while exit/uninstall teardown pumps events
         if (_settingsOpen) return;   // second-instance signal or double-click while already open
+
+        // Re-read the Windows light/dark preference — this long-lived tray app
+        // may outlive several theme switches, and the palette is captured at
+        // control construction time.
+        Theme.Initialize();
         _settingsOpen = true;
 
         // Suppress file watcher while the form is open to avoid
@@ -656,26 +681,104 @@ public sealed class AppContext : ApplicationContext
     private async void OnCheckForUpdates(object? sender, EventArgs e)
     {
         ShowBalloon("Checking for updates...");
-        await UpdateChecker.CheckForUpdateAsync((tag, url) =>
-            _syncContext.Post(_ =>
-            {
-                _updateUrl = string.IsNullOrEmpty(url) ? ReleasesFallbackUrl : url;
-                Logger.Info($"Update available: {tag}");
-                ShowBalloon($"Update {tag} available — click this notification to download.", ToolTipIcon.Info, isUpdate: true);
-            }, null),
+        await UpdateChecker.CheckForUpdateAsync((tag, url, setupUrl) =>
+            _syncContext.Post(_ => AnnounceUpdate(tag, url, setupUrl), null),
             () => _syncContext.Post(_ =>
                 ShowBalloon("You're running the latest version."), null));
     }
 
     private void OnBalloonClicked(object? sender, EventArgs e)
     {
-        // Only navigate when the balloon being clicked is the update one —
-        // clicking "Connected to X." must not surprise-open a browser.
-        if (!_lastBalloonIsUpdate || string.IsNullOrEmpty(_updateUrl)) return;
+        // Only act when the balloon being clicked is the update one —
+        // clicking "Connected to X." must not surprise-start an install.
+        if (!_lastBalloonIsUpdate) return;
+        BeginUpdateInstall();
+    }
+
+    // -------------------------------------------------------------------------
+    // In-app update
+    // -------------------------------------------------------------------------
+
+    private async void BeginUpdateInstall()
+    {
+        if (_updateInProgress || _shuttingDown) return;
+
+        // No direct installer asset — browser fallback
+        if (string.IsNullOrEmpty(_updateSetupUrl))
+        {
+            OpenReleasePage();
+            return;
+        }
+
+        _updateInProgress = true;
+        try
+        {
+            ShowBalloon($"Downloading update {_updateTag}...");
+            Logger.Info($"Downloading update from {_updateSetupUrl}");
+            var dest = Path.Combine(Path.GetTempPath(), "WG-Autoconnect-Setup.exe");
+            bool ok = await UpdateService.DownloadInstallerAsync(_updateSetupUrl, dest);
+            if (!ok)
+            {
+                ShowBalloon("Update download failed — opening the release page instead.", ToolTipIcon.Warning);
+                OpenReleasePage();
+                return;
+            }
+            ExitForUpdate(dest);
+        }
+        finally
+        {
+            _updateInProgress = false;
+        }
+    }
+
+    /// <summary>
+    /// Launches the downloaded installer and exits. Deliberately does NOT
+    /// disconnect the VPN regardless of DisconnectOnExit — the ownership
+    /// marker carries management through the upgrade without bouncing the
+    /// tunnel, and the new version resumes seamlessly.
+    /// </summary>
+    private void ExitForUpdate(string installerPath)
+    {
+        if (_shuttingDown) return;
+        _shuttingDown = true;
+        _pollTimer.Stop();
+        _graceTimer.Stop();
+        _disconnectPending = false;   // timer stopped — a live poll must be able to re-arm it
+        SettleTransition();
+        Notifier.ClearHistory();
+
         try
         {
             System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo(_updateUrl) { UseShellExecute = true });
+                new System.Diagnostics.ProcessStartInfo(installerPath) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            // Installer failed to launch — fully restore normal operation:
+            // clear the shutdown gate, apply any settings change that was
+            // deferred during the settle window (the "next launch will load
+            // it" assumption no longer holds), and resume polling.
+            Logger.Error($"Could not launch installer: {ex.Message}");
+            _shuttingDown = false;
+            ApplyPendingSettings();
+            _pollTimer.Start();
+            ShowBalloon("Could not launch the installer — opening the release page instead.", ToolTipIcon.Warning);
+            OpenReleasePage();
+            return;
+        }
+
+        Logger.Info("Exiting for in-app update; installer launched.");
+        _trayIcon.Visible = false;
+        Application.Exit();
+    }
+
+    private void OpenReleasePage()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(_updateUrl ?? ReleasesFallbackUrl)
+                { UseShellExecute = true });
         }
         catch (Exception ex)
         {
@@ -718,6 +821,46 @@ public sealed class AppContext : ApplicationContext
         {
             Application.DoEvents();
             Thread.Sleep(50);
+        }
+    }
+
+    private void OnCopyDiagnostics(object? sender, EventArgs e)
+    {
+        try
+        {
+            var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("=== WG-Autoconnect Diagnostics ===");
+            sb.AppendLine($"Version:       v{version?.ToString(3) ?? "?"}");
+            sb.AppendLine($"OS:            {Environment.OSVersion.VersionString} ({(Environment.Is64BitOperatingSystem ? "x64" : "x86")})");
+            sb.AppendLine($"Exe:           {Environment.ProcessPath}");
+            sb.AppendLine($"Dark theme:    {Theme.IsDark}");
+            sb.AppendLine($"Tunnel:        {_settings.TunnelName}");
+            sb.AppendLine($"Config path:   {_settings.WireGuardConfigPath}");
+            sb.AppendLine($"WireGuard exe: {_settings.WireGuardExePath} (exists: {File.Exists(_settings.WireGuardExePath)})");
+            sb.AppendLine($"Monitored:     {string.Join(", ", _settings.MonitoredApps)}");
+            sb.AppendLine($"Poll/grace:    {_settings.PollIntervalMs}ms / {_settings.GracePeriodSeconds}s | DisconnectOnExit: {_settings.DisconnectOnExit}");
+            sb.AppendLine($"Service:       exists={_vpn.ServiceExists()} running={_vpn.IsConnected()}");
+            sb.AppendLine($"State:         paused={_isPaused} transitioning={_isTransitioning} scriptConnected={_isScriptConnected} override={_userOverride} forced={_forcedConnect} marker={ConnectionMarker.Exists()}");
+            sb.AppendLine($"Startup task:  registered={StartupService.IsRegistered()} cmd={StartupService.GetRegisteredCommand() ?? "-"}");
+            sb.AppendLine($"Running now:   {string.Join(", ", _lastRunningApps.DefaultIfEmpty("(none)"))}");
+            sb.AppendLine();
+            sb.AppendLine("=== Last 60 log lines ===");
+            try
+            {
+                if (File.Exists(Logger.LogPath))
+                    foreach (var line in File.ReadLines(Logger.LogPath).TakeLast(60))
+                        sb.AppendLine(line);
+            }
+            catch { sb.AppendLine("(log unavailable)"); }
+
+            Clipboard.SetText(sb.ToString());
+            ShowBalloon("Diagnostics copied to clipboard — paste into a GitHub issue.");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Copy diagnostics failed: {ex.Message}");
+            ShowBalloon("Could not copy diagnostics.", ToolTipIcon.Error);
         }
     }
 
@@ -772,6 +915,7 @@ public sealed class AppContext : ApplicationContext
         _pollTimer.Stop();
         _graceTimer.Stop();
         SettleTransition();
+        Notifier.ClearHistory();   // a toast outliving the process is a dead button
 
         // Marker (not _isScriptConnected) is the durable ownership truth — it is
         // set BEFORE an install is issued. Gate on ServiceExists, not

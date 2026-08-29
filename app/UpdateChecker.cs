@@ -9,7 +9,13 @@ public static class UpdateChecker
 {
     private const string ReleasesUrl = "https://api.github.com/repos/Artixskillz/WG-Autoconnect/releases/latest";
 
-    public static async Task CheckForUpdateAsync(Action<string, string> onUpdateAvailable, Action? onUpToDate = null)
+    /// <summary>
+    /// onUpdateAvailable(tag, releasePageUrl, setupAssetUrl?) — setupAssetUrl is
+    /// the direct download for the installer when the release has one attached,
+    /// enabling in-app updates; null means browser-only fallback.
+    /// </summary>
+    public static async Task CheckForUpdateAsync(
+        Action<string, string, string?> onUpdateAvailable, Action? onUpToDate = null)
     {
         try
         {
@@ -28,7 +34,12 @@ public static class UpdateChecker
             if (!Version.TryParse(tag, out var latest)) return;
 
             if (latest > current)
-                onUpdateAvailable(release.TagName, release.HtmlUrl ?? "");
+            {
+                var setupUrl = release.Assets?
+                    .FirstOrDefault(a => string.Equals(a.Name, "WG-Autoconnect-Setup.exe",
+                        StringComparison.OrdinalIgnoreCase))?.DownloadUrl;
+                onUpdateAvailable(release.TagName, release.HtmlUrl ?? "", setupUrl);
+            }
             else
                 onUpToDate?.Invoke();
         }
@@ -45,5 +56,17 @@ public static class UpdateChecker
 
         [JsonPropertyName("html_url")]
         public string? HtmlUrl { get; set; }
+
+        [JsonPropertyName("assets")]
+        public List<GitHubAsset>? Assets { get; set; }
+    }
+
+    private sealed class GitHubAsset
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("browser_download_url")]
+        public string? DownloadUrl { get; set; }
     }
 }

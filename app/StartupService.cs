@@ -9,6 +9,48 @@ public static class StartupService
     public static bool IsRegistered()
         => RunSchtasks("/query /tn \"WG-Autoconnect\"", out _) == 0;
 
+    /// <summary>The exe the registered startup task launches, or null.</summary>
+    public static string? GetRegisteredCommand()
+    {
+        if (RunSchtasks("/query /tn \"WG-Autoconnect\" /xml", out string output) != 0) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(
+            output, @"<Command>(.*?)</Command>", System.Text.RegularExpressions.RegexOptions.Singleline);
+        if (!m.Success) return null;
+        // Unescape the XML entities Register() writes (&amp; last so it can't
+        // create new entities mid-unescape)
+        var cmd = m.Groups[1].Value.Trim()
+            .Replace("&lt;", "<").Replace("&gt;", ">")
+            .Replace("&quot;", "\"").Replace("&apos;", "'")
+            .Replace("&amp;", "&");
+        return cmd.Trim('"');
+    }
+
+    /// <summary>
+    /// Re-registers the startup task if it points at a different exe than the
+    /// one currently running — e.g. a stale portable copy after the user
+    /// switched to the installer, or a moved/renamed exe. Without this, login
+    /// keeps launching the OLD exe forever.
+    /// </summary>
+    public static void HealRegistration()
+    {
+        try
+        {
+            if (!IsRegistered()) return;
+            var registered = GetRegisteredCommand();
+            var current    = Environment.ProcessPath;
+            if (registered == null || current == null) return;
+            if (string.Equals(registered, current, StringComparison.OrdinalIgnoreCase)) return;
+
+            Logger.Info($"Startup task points at '{registered}' — re-registering for '{current}'.");
+            if (Register())
+                Logger.Info("Startup task healed.");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Startup task heal failed: {ex.Message}");
+        }
+    }
+
     public static bool Register()
     {
         var exe = Environment.ProcessPath ?? Application.ExecutablePath;

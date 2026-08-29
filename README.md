@@ -11,6 +11,10 @@ WG-Autoconnect is a lightweight Windows tray application that monitors your runn
 ## Features
 
 - **App-based VPN automation** — VPN connects when any monitored app starts, disconnects when all close
+  > Note: while the tunnel is up, traffic routes according to your tunnel's `AllowedIPs` (typically all traffic) — the app automates *when* the VPN is connected, it does not split-tunnel per app
+- **Use tunnels imported in WireGuard** — pick a tunnel you've already imported into the WireGuard app; no loose `.conf` file needed
+- **Dark mode** — follows your Windows theme, including the title bar
+- **In-app updates** — the update notification has an "Install now" button that downloads and runs the installer for you
 - **Grace period** — Configurable delay before disconnecting, so brief app restarts don't churn the tunnel
 - **Connection verification** — Confirms connect/disconnect succeeded, with automatic retry on failure
 - **Live status** — Real-time VPN state, running apps, and connection status in the settings panel and tray tooltip
@@ -24,8 +28,10 @@ WG-Autoconnect is a lightweight Windows tray application that monitors your runn
 - **Professional installer** — Inno Setup installer with EULA, desktop shortcut option, and auto-start registration (or use the portable single-file exe)
 - **Config file watcher** — External changes to `settings.json` are picked up automatically (saves are atomic; a corrupt file is backed up instead of silently reset)
 - **Log rotation** — Timestamped log file, auto-rotates at 512 KB, viewable from the tray menu
-- **Auto-update check** — Notifies you on startup if a newer release is available; click the notification to open the download page
-- **DPI-aware tray icon** — Crisp at 125%/150% display scaling
+- **Auto-update check** — Notifies you on startup if a newer release is available; "Install now" downloads and runs the installer for you (falls back to opening the release page)
+- **Fully DPI-aware** — windows and tray icon render crisp at any display scaling (100–200%) and rescale live when moved between monitors
+- **Self-healing startup** — if the startup task points at an old exe (e.g. after switching from portable to installer), it's re-registered automatically
+- **Copy Diagnostics** — one tray click copies version, config, service state, and recent log lines for pasting into a GitHub issue
 - **Single instance** — Launching the app again focuses the running instance's settings window
 - **Uninstaller** — Clean removal from tray menu or `--uninstall` flag (removes startup task, settings, logs)
 - **Single-file exe** — Self-contained, no installer needed, no runtime dependencies
@@ -70,7 +76,8 @@ Grab the latest release from the [Releases](https://github.com/Artixskillz/WG-Au
 | Settings | Open the settings panel with live VPN status |
 | View Log | Open `app.log` in Notepad |
 | Open Data Folder | Open `%AppData%\WG-Autoconnect` in Explorer |
-| Check for Updates | Check GitHub for a newer release (click the notification to download) |
+| Copy Diagnostics | Copy version, config, and recent log lines to the clipboard |
+| Check for Updates | Check GitHub for a newer release — "Install now" downloads and runs the installer |
 | Uninstall | Remove startup task, settings, logs, and optionally the exe |
 | Exit | Exit the app (disconnects VPN if "Disconnect on exit" is enabled) |
 
@@ -130,7 +137,7 @@ dotnet build
 
 # Publish single-file exe
 dotnet publish -c Release
-# Output: app/bin/Release/net8.0-windows/win-x64/publish/WG-Autoconnect.exe
+# Output: app/bin/Release/net8.0-windows10.0.17763.0/win-x64/publish/WG-Autoconnect.exe
 ```
 
 **Build the installer** (requires [Inno Setup 6](https://jrsoftware.org/isdl.php)):

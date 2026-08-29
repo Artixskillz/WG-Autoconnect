@@ -43,9 +43,10 @@ public static class Uninstaller
         //    A tunnel the user connected via the WireGuard GUI is left alone.
         TearDownTunnelIfOwned(liveSettings);
 
-        // 2. Remove startup task
+        // 2. Remove startup task and toast notification registration
         if (StartupService.IsRegistered())
             StartupService.Unregister();
+        Notifier.Uninstall();
 
         // 3. Delete app data (settings + logs + marker) — unless the user
         //    keeps it, in which case a future reinstall picks the

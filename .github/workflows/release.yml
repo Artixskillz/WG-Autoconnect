@@ -44,5 +44,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            app/bin/Release/net8.0-windows/win-x64/publish/WG-Autoconnect.exe
+            app/bin/Release/net8.0-windows10.0.17763.0/win-x64/publish/WG-Autoconnect.exe
             installer/output/WG-Autoconnect-Setup.exe

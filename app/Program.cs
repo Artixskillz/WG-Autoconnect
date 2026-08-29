@@ -68,6 +68,7 @@ static class Program
             };
 
             ApplicationConfiguration.Initialize();
+            Theme.Initialize();   // read Windows light/dark preference before any form opens
 
             // Install the WinForms synchronization context BEFORE anything
             // captures SynchronizationContext.Current — it is otherwise null
